@@ -1,0 +1,37 @@
+# Release pipeline: a pushed vX.Y.Z tag publishes a GitHub Release with
+# auto-generated release notes.
+#
+# In http-download-benchmark this workflow also gates the tag against the
+# package version (scripts/check_tag_version.py) and attaches built
+# distributions. Adrobot has no package yet — once the project has a versioned
+# artifact and a build, port the version gate and the build steps from the
+# benchmark repo.
+#
+# NOTE for humans: this workflow can only be verified end to end by pushing a
+# real tag; agents never push tags.
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write # required to create the GitHub Release
+
+jobs:
+  release:
+    name: Publish release
+    # ubuntu-24.04, not ubuntu-latest: keeps the runner stable across GitHub
+    # image upgrades.
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out the tagged commit
+        uses: actions/checkout@v7
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v3
+        with:
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
