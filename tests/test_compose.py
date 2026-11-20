@@ -42,6 +42,20 @@ def test_packaged_ui_real_adapter_and_drafts_survive_container_recreation():
             assert [c['id'] for c in client.get('/api/campaigns', params={'q': '12'}).json()] == [12]
             assert [c['id'] for c in client.get('/api/campaigns', params={'q': '120'}).json()] == [120]
             assert client.get('/api/campaigns', params={'q': 'missing'}).json() == []
+            headers = {'Origin': 'http://127.0.0.1:18080', 'X-Adrobot-Request': '1'}
+            settings = client.get('/api/creator/settings')
+            assert settings.status_code == 200
+            assert settings.json()['domain']['name'] == 'tracking.example'
+            assert client.get('/api/offers', params={'q': '9'}).json() == [{'id': 9, 'name': 'Оффер А'}]
+            preview = client.post('/api/creator/preview', headers=headers, json={
+                'name': 'campaign1', 'geos': ['DE', 'FR', 'DE'], 'offer_id': 9})
+            assert preview.status_code == 200
+            assert preview.json()['name'] == 'test_example_campaign1'
+            assert preview.json()['regular']['filters'][0]['payload'] == ['DE', 'FR']
+            assert preview.json()['default']['offers'][0]['share'] == 100
+            assert client.post('/api/creator/preview', headers=headers, json={
+                'name': 'campaign1', 'geos': ['XX'], 'offer_id': 9}).status_code == 422
+            assert client.post('/api/campaigns', headers=headers, json={}).status_code == 405
             streams = client.get('/api/campaigns/12/streams').json()
             assert streams[0]['offers'][0]['name'] == 'Оффер А'
             assert streams[0]['draft']['base'][0]['share'] == 70

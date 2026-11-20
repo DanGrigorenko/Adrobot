@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
+import { Creator } from './Creator';
 
 type Campaign = { id: number; name: string; keitaro_url: string };
 type Binding = { offer_id: number; share: unknown; state: string; pinned?: boolean; name?: string };
@@ -62,6 +63,7 @@ function StreamPanel({ stream }: { stream: Stream }) {
 }
 
 export function App() {
+  const [creatorOpen, setCreatorOpen] = useState(false);
   const [input, setInput] = useState('');
   const [query, setQuery] = useState('');
   const [searchAttempt, setSearchAttempt] = useState(0);
@@ -122,6 +124,7 @@ export function App() {
   }
 
   function choose(campaign: Campaign) {
+    setCreatorOpen(false);
     const url = new URL(window.location.href);
     url.searchParams.set('campaign', String(campaign.id));
     window.history.replaceState(null, '', url);
@@ -134,6 +137,7 @@ export function App() {
     <div className="app-layout">
       <aside className="campaigns" aria-labelledby="campaigns-heading">
         <h1 id="campaigns-heading">Кампании</h1>
+        <button className="creator-open" aria-pressed={creatorOpen} onClick={() => setCreatorOpen(open => !open)}>{creatorOpen ? 'Вернуться к потокам' : 'Новая кампания (Creator)'}</button>
         <form onSubmit={search} role="search">
           <label htmlFor="campaign-search">Название или точный ID</label>
           <div className="search-controls"><input id="campaign-search" type="search" value={input} onChange={event => setInput(event.target.value)} placeholder="Найти кампанию" /><button type="submit" disabled={campaignLoading}>Найти</button></div>
@@ -145,7 +149,7 @@ export function App() {
         </div>
       </aside>
       <main id="workspace" className="workspace" tabIndex={-1}>
-        {!selected ? <div className="start-state"><h2>Выберите кампанию</h2><p>Найдите её по названию или точному ID, чтобы открыть потоки и привязки офферов.</p><p>При первом открытии поддерживаемого потока исходные доли сохраняются в локальный черновик. Повторное чтение его не заменяет.</p></div> : <>
+        {creatorOpen ? <Creator /> : !selected ? <div className="start-state"><h2>Выберите кампанию</h2><p>Найдите её по названию или точному ID, чтобы открыть потоки и привязки офферов.</p><p>При первом открытии поддерживаемого потока исходные доли сохраняются в локальный черновик. Повторное чтение его не заменяет.</p></div> : <>
           <div className="workspace-heading"><div><h2>{selected.name || 'Без названия'}</h2><p className="campaign-meta">Кампания ID {selected.id}{syncedAt && ` · Прочитано в ${syncedAt}`}</p></div><div className="workspace-actions"><a href={selected.keitaro_url} target="_blank" rel="noopener noreferrer">Открыть Keitaro <span className="sr-only">(в новой вкладке)</span></a><button onClick={() => setRefresh(n => n + 1)} disabled={streamLoading}>Обновить потоки</button></div></div>
           <p className="scope-note">Этот экран не изменяет Keitaro. Редактирование и публикация пока недоступны.</p>
           <div aria-busy={streamLoading}>
