@@ -1,0 +1,4 @@
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+markers = ["compose: opt-in Docker Compose HTTP acceptance with a fake upstream"]
