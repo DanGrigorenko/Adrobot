@@ -20,3 +20,13 @@ def test_campaign_search_matches_name_or_exact_id():
         {'id': 12, 'name': 'Summer sale'}
     ]
     assert client.get('/api/campaigns', params={'q': 'missing'}).json() == []
+
+
+def test_campaign_search_reports_upstream_failure_without_leaking_details():
+    class UnavailableKeitaro:
+        def campaigns(self):
+            raise ConnectionError('sensitive upstream details')
+
+    response = TestClient(create_app(UnavailableKeitaro())).get('/api/campaigns')
+    assert response.status_code == 502
+    assert 'sensitive upstream details' not in response.text
