@@ -11,6 +11,10 @@
   --focus: #0b6eaa;
 }
 * { box-sizing: border-box; }
+.share-form { display: flex; gap: 8px; align-items: center; }
+.share-form input { width: 88px; font-variant-numeric: tabular-nums; }
+.share-form button { white-space: nowrap; }
+.pin-button { display: block; margin-top: 8px; white-space: nowrap; }
 body { margin: 0; }
 ::selection { background: #c4e9df; color: #173c32; }
 :focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; }
