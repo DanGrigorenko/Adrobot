@@ -2,15 +2,25 @@ from contextlib import asynccontextmanager
 import os
 from pathlib import Path
 from urllib.parse import urlsplit
+from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, ConfigDict, StrictInt
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from app.editor import open_streams
 from app.keitaro import HttpKeitaro, validate_base_url
 from app.storage import DraftStore
+
+
+class DraftAction(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    version: StrictInt
+    action: Literal['share', 'pin', 'unpin']
+    offer_id: StrictInt
+    share: StrictInt | None = None
 
 
 def create_app(keitaro=None, *, database_url=None, keitaro_url=None, frontend_dir=None):
@@ -83,6 +93,22 @@ def create_app(keitaro=None, *, database_url=None, keitaro_url=None, frontend_di
         for stream in result:
             stream['keitaro_url'] = f'{base_url}/admin/#!/campaigns/{campaign_id}'
         return result
+
+    @app.post('/api/campaigns/{campaign_id}/streams/{stream_id}/actions')
+    def edit(campaign_id: int, stream_id: int, body: DraftAction):
+        try:
+            remote = next((s for s in keitaro.streams(campaign_id) if s['id'] == stream_id), None)
+            if remote is None or remote.get('type') not in ('regular', 'default') or remote.get('schema') != 'landings':
+                raise HTTPException(status_code=409, detail='Поток больше не поддерживает редактирование офферов')
+            return store.edit(campaign_id, stream_id, body.version, body.action, body.offer_id, body.share)
+        except ConnectionError:
+            raise HTTPException(status_code=502, detail='Не удалось проверить доступность потока в Keitaro') from None
+        except LookupError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from None
+        except RuntimeError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from None
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from None
 
     build = Path(frontend_dir or os.getenv('FRONTEND_DIR', 'frontend/dist'))
     if (build / 'assets').is_dir():

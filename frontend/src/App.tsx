@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 
 type Campaign = { id: number; name: string; keitaro_url: string };
@@ -21,8 +21,21 @@ function displayShare(value: unknown): string {
   return `${typeof value === 'object' ? JSON.stringify(value) : String(value)}%`;
 }
 
-function Bindings({ bindings, names, label, showPins }: {
-  bindings: Binding[]; names: Record<string, string>; label: string; showPins: boolean;
+type EditAction = (action: 'share' | 'pin' | 'unpin', offerId: number, share?: number) => void;
+
+function ShareInput({ binding, disabled, onEdit }: { binding: Binding; disabled: boolean; onEdit: EditAction }) {
+  const id = useId();
+  const [value, setValue] = useState(String(binding.share ?? ''));
+  useEffect(() => setValue(String(binding.share ?? '')), [binding.share]);
+  return <form className="share-form" onSubmit={event => { event.preventDefault(); onEdit('share', binding.offer_id, Number(value)); }}>
+    <label className="sr-only" htmlFor={id}>Доля оффера {binding.offer_id}, %</label>
+    <input id={id} aria-label={`Доля оффера ${binding.offer_id}, %`} type="number" min="0" max="100" step="1" required value={value} disabled={disabled} onChange={event => setValue(event.target.value)} />
+    <button disabled={disabled} type="submit" aria-label={`Применить долю оффера ${binding.offer_id}`}>Применить</button>
+  </form>;
+}
+
+function Bindings({ bindings, names, label, showPins, onEdit, busy = false }: {
+  bindings: Binding[]; names: Record<string, string>; label: string; showPins: boolean; onEdit?: EditAction; busy?: boolean;
 }) {
   if (!bindings.length) return <p className="empty-inline">В этом потоке нет привязок офферов.</p>;
   return <div className="table-scroll" tabIndex={0} role="region" aria-label={label}>
@@ -31,17 +44,37 @@ function Bindings({ bindings, names, label, showPins }: {
       <thead><tr><th scope="col">Оффер</th><th scope="col">Доля</th><th scope="col">Статус</th>{showPins && <th scope="col">Закрепление (Pin)</th>}</tr></thead>
       <tbody>{bindings.map((binding, index) => <tr key={`${binding.offer_id}-${index}`}>
         <th scope="row"><span className="offer-name">{binding.name ?? names[String(binding.offer_id)] ?? 'Оффер недоступен в каталоге'}</span><span className="entity-id">ID {binding.offer_id}</span></th>
-        <td className="share">{displayShare(binding.share)}</td>
+        <td className="share">{onEdit && binding.state === 'active' ? <ShareInput binding={binding} disabled={busy} onEdit={onEdit} /> : displayShare(binding.share)}</td>
         <td><span className={`binding-state ${binding.state === 'active' ? 'active' : ''}`}>
           {binding.state === 'active' ? 'Активна' : binding.state === 'disabled' ? 'Отключена (disabled)' : `Неизвестный статус: ${binding.state}`}
         </span></td>
-        {showPins && <td>{binding.pinned ? 'Закреплена' : 'Не закреплена'}</td>}
+        {showPins && <td><span>{binding.pinned ? 'Закреплена' : 'Не закреплена'}</span>{onEdit && binding.state === 'active' && <button className="pin-button" disabled={busy} aria-pressed={Boolean(binding.pinned)} onClick={() => onEdit(binding.pinned ? 'unpin' : 'pin', binding.offer_id)}>{binding.pinned ? 'Открепить (Unpin)' : 'Закрепить (Pin)'}</button>}</td>}
       </tr>)}</tbody>
     </table>
   </div>;
 }
 
-function StreamPanel({ stream }: { stream: Stream }) {
+function StreamPanel({ stream, campaignId, onRefresh, disabled }: { stream: Stream; campaignId: number; onRefresh: () => void; disabled: boolean }) {
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState('');
+  const [error, setError] = useState('');
+  const inFlight = useRef(false);
+  async function edit(action: 'share' | 'pin' | 'unpin', offerId: number, share?: number) {
+    if (!stream.draft || inFlight.current) return;
+    inFlight.current = true;
+    setBusy(true); setError(''); setMessage('');
+    try {
+      const response = await fetch(`/api/campaigns/${campaignId}/streams/${stream.id}/actions`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Adrobot-Request': '1' },
+        body: JSON.stringify({ version: stream.draft.version, action, offer_id: offerId, ...(action === 'share' ? { share } : {}) }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : 'Доля должна быть целым числом от 0 до 100.');
+      setMessage('Черновик сохранён. Keitaro не изменён.');
+      onRefresh();
+    } catch (failure) { setError(failure instanceof Error ? failure.message : 'Не удалось сохранить. Обновите потоки перед повтором.'); }
+    finally { setBusy(false); inFlight.current = false; }
+  }
   const type = stream.type === 'regular' ? 'Обычный (Regular)' : stream.type === 'default' ? 'По умолчанию (Default)' : stream.type;
   return <section className="stream" aria-labelledby={`stream-${stream.id}`}>
     <div className="stream-heading">
@@ -49,10 +82,14 @@ function StreamPanel({ stream }: { stream: Stream }) {
       <span className="mode-label">{stream.editable ? 'Распределение офферов' : 'Только просмотр'}</span>
     </div>
     {stream.draft ? <>
-      <p className="draft-note">Исходный черновик сохранён · Версия {stream.draft.version}</p>
+      <p className="draft-note">Черновик сохранён · Версия {stream.draft.version}</p>
       {stream.conflict && <div className="notice warning" role="status"><strong>Keitaro изменился относительно базы.</strong><p>Черновик и его база сохранены без изменений. Публикация заблокирована до разрешения конфликта.</p></div>}
       {stream.validation_errors.length > 0 && <div className="notice warning"><strong>Доли требуют исправления перед публикацией</strong><ul>{stream.validation_errors.map(error => <li key={error}>{error}</li>)}</ul><p>Исходные значения показаны без округления и перераспределения.</p></div>}
-      <Bindings bindings={stream.draft.bindings} names={stream.offer_names} label={`Черновик потока ${stream.id}`} showPins />
+      <p className="draft-note">Целые проценты 0–100. «Применить» закрепляет долю и распределяет остаток; Unpin пересчитывает. Pin сохраняет текущую долю.</p>
+      {busy && <p className="draft-note" role="status">Сохранение черновика…</p>}
+      {message && <p className="draft-note" role="status">{message}</p>}
+      {error && <div className="notice error" role="alert">{error} <button onClick={onRefresh}>Перечитать потоки</button></div>}
+      <Bindings bindings={stream.draft.bindings} names={stream.offer_names} label={`Черновик потока ${stream.id}`} showPins onEdit={edit} busy={busy || disabled} />
       {stream.conflict && <details className="comparison"><summary>Сравнить базу и текущее состояние Keitaro</summary><h4>База черновика</h4><Bindings bindings={stream.draft.base} names={stream.offer_names} label={`База потока ${stream.id}`} showPins={false} /><h4>Сейчас в Keitaro</h4><Bindings bindings={stream.offers} names={stream.offer_names} label={`Текущее состояние потока ${stream.id}`} showPins={false} /></details>}
     </> : <>
       <p className="readonly-note">{stream.read_only_reason}. Черновик не создаётся; маршрутизация не меняется.</p>
@@ -130,7 +167,7 @@ export function App() {
 
   return <>
     <a className="skip-link" href="#workspace">Перейти к потокам</a>
-    <header className="app-header"><span className="wordmark">Adrobot</span><span>Кампании Keitaro</span><span className="read-mode">Просмотр и исходные черновики</span></header>
+    <header className="app-header"><span className="wordmark">Adrobot</span><span>Кампании Keitaro</span><span className="read-mode">Редактор черновиков</span></header>
     <div className="app-layout">
       <aside className="campaigns" aria-labelledby="campaigns-heading">
         <h1 id="campaigns-heading">Кампании</h1>
@@ -147,11 +184,11 @@ export function App() {
       <main id="workspace" className="workspace" tabIndex={-1}>
         {!selected ? <div className="start-state"><h2>Выберите кампанию</h2><p>Найдите её по названию или точному ID, чтобы открыть потоки и привязки офферов.</p><p>При первом открытии поддерживаемого потока исходные доли сохраняются в локальный черновик. Повторное чтение его не заменяет.</p></div> : <>
           <div className="workspace-heading"><div><h2>{selected.name || 'Без названия'}</h2><p className="campaign-meta">Кампания ID {selected.id}{syncedAt && ` · Прочитано в ${syncedAt}`}</p></div><div className="workspace-actions"><a href={selected.keitaro_url} target="_blank" rel="noopener noreferrer">Открыть Keitaro <span className="sr-only">(в новой вкладке)</span></a><button onClick={() => setRefresh(n => n + 1)} disabled={streamLoading}>Обновить потоки</button></div></div>
-          <p className="scope-note">Этот экран не изменяет Keitaro. Редактирование и публикация пока недоступны.</p>
+          <p className="scope-note">Доли и закрепления сохраняются в локальном черновике. Этот экран не изменяет Keitaro; публикация пока недоступна.</p>
           <div aria-busy={streamLoading}>
             {streamLoading && <p role="status" className="loading">Загрузка потоков… Черновики и база сохраняются.</p>}
             {streamError && <div className="notice error" role="alert"><strong>Не удалось загрузить потоки</strong><p>{streamError}</p>{streams !== null && <p>Ниже показаны последние загруженные данные, они могут быть устаревшими.</p>}<button onClick={() => setRefresh(n => n + 1)}>Повторить загрузку</button></div>}
-            {streams !== null && (streams.length ? streams.map(stream => <StreamPanel key={stream.id} stream={stream} />) : <div className="empty-streams"><h3>В кампании пока нет потоков</h3><p>Проверьте конфигурацию в Keitaro или обновите список позже.</p></div>)}
+            {streams !== null && (streams.length ? streams.map(stream => <StreamPanel key={`${selected.id}-${stream.id}`} stream={stream} campaignId={selected.id} onRefresh={() => setRefresh(n => n + 1)} disabled={streamLoading || Boolean(streamError)} />) : <div className="empty-streams"><h3>В кампании пока нет потоков</h3><p>Проверьте конфигурацию в Keitaro или обновите список позже.</p></div>)}
           </div>
         </>}
       </main>

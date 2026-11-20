@@ -45,5 +45,21 @@ class DraftStore:
             draft = session.scalar(select(Draft).where(Draft.stream_id == stream_id))
             return {'version': draft.version, 'base': draft.base, 'bindings': draft.bindings}
 
+    def edit(self, campaign_id, stream_id, version, action, offer_id, share):
+        from app.editor import edit_binding
+
+        with Session(self.engine) as session, session.begin():
+            # Acquire SQLite's writer lock before reading the expected version.
+            session.connection().exec_driver_sql('BEGIN IMMEDIATE')
+            draft = session.scalar(select(Draft).where(
+                Draft.stream_id == stream_id, Draft.campaign_id == campaign_id))
+            if draft is None:
+                raise LookupError('Сначала загрузите черновик потока')
+            if draft.version != version:
+                raise RuntimeError('Черновик изменён в другой вкладке. Перечитайте потоки.')
+            draft.bindings = edit_binding(draft.bindings, offer_id, action, share)
+            draft.version += 1
+            return {'version': draft.version, 'base': draft.base, 'bindings': draft.bindings}
+
     def close(self):
         self.engine.dispose()

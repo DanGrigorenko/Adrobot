@@ -2,11 +2,11 @@
 services:
   app:
     ports: !override
-      - "127.0.0.1:18080:8000"
+      - "127.0.0.1:${TEST_APP_PORT:-18080}:8000"
     environment:
       KEITARO_BASE_URL: http://fixture:8081
       KEITARO_API_KEY: fixture-only-secret
-      APP_ORIGIN: http://127.0.0.1:18080
+      APP_ORIGIN: http://127.0.0.1:${TEST_APP_PORT:-18080}
     depends_on:
       - fixture
   fixture:
@@ -15,4 +15,4 @@ services:
     volumes:
       - ./tests/fixture_server.py:/fixture/server.py:ro
     ports:
-      - "127.0.0.1:18081:8081"
+      - "127.0.0.1:${TEST_FIXTURE_PORT:-18081}:8081"
