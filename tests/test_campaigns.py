@@ -11,6 +11,23 @@ class KeitaroStub:
         ]
 
 
+def test_campaign_streams_can_be_opened():
+    class StreamsKeitaro(KeitaroStub):
+        def streams(self, campaign_id):
+            assert campaign_id == 12
+            return [{'id': 7, 'name': 'Default', 'schema': 'landings', 'offers': [
+                {'offer_id': 9, 'share': 70, 'state': 'active'},
+                {'offer_id': 10, 'share': 30, 'state': 'disabled'},
+            ]}]
+
+    response = TestClient(create_app(StreamsKeitaro())).get('/api/campaigns/12/streams')
+    assert response.status_code == 200
+    assert response.json()[0]['offers'] == [
+        {'offer_id': 9, 'share': 70, 'state': 'active'},
+        {'offer_id': 10, 'share': 30, 'state': 'disabled'},
+    ]
+
+
 def test_campaign_search_matches_name_or_exact_id():
     client = TestClient(create_app(KeitaroStub()))
     assert client.get('/api/campaigns', params={'q': 'SUMMER'}).json() == [

@@ -17,4 +17,11 @@ def create_app(keitaro):
             or query == str(campaign['id'])
         ]
 
+    @app.get('/api/campaigns/{campaign_id}/streams')
+    def streams(campaign_id: int):
+        try:
+            return keitaro.streams(campaign_id)
+        except ConnectionError:
+            raise HTTPException(status_code=502, detail='Keitaro недоступен') from None
+
     return app
