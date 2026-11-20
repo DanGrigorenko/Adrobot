@@ -1,4 +1,47 @@
-"""Read-side Editor use case; it never writes to Keitaro."""
+"""Editor reads and local draft rules; it never writes to Keitaro."""
+
+
+def edit_binding(bindings, offer_id, action, share=None):
+    from copy import deepcopy
+
+    result = deepcopy(bindings)
+    matches = [b for b in result if b['offer_id'] == offer_id]
+    if len(matches) != 1 or matches[0]['state'] != 'active':
+        raise ValueError('Изменять можно только существующую активную привязку')
+    target = matches[0]
+    if action == 'share':
+        if type(share) is not int or not 0 <= share <= 100:
+            raise ValueError('Доля должна быть целым числом от 0 до 100')
+        target.update(share=share, pinned=True)
+    elif action == 'pin':
+        if type(target['share']) is not int or not 0 <= target['share'] <= 100:
+            raise ValueError('Нельзя закрепить некорректную долю: сначала исправьте её')
+        target['pinned'] = True
+        if sum(b['share'] for b in result if b['state'] == 'active' and b['pinned']) > 100:
+            raise ValueError('Сумма закреплённых долей превышает 100%')
+        if all(b['pinned'] for b in result if b['state'] == 'active') and validation_errors(result):
+            raise ValueError('Сумма закреплённых долей должна быть 100%')
+        return result
+    elif action == 'unpin':
+        target['pinned'] = False
+    else:
+        raise ValueError('Неизвестное действие')
+    active = [b for b in result if b['state'] == 'active']
+    pinned = [b for b in active if b['pinned']]
+    if any(type(b['share']) is not int or not 0 <= b['share'] <= 100 for b in pinned):
+        raise ValueError('Закреплённые доли должны быть целыми числами от 0 до 100')
+    remaining = 100 - sum(b['share'] for b in pinned)
+    free = sorted((b for b in active if not b['pinned']), key=lambda b: b['offer_id'])
+    if remaining < 0 or (not free and remaining != 0):
+        raise ValueError('Невозможно распределить 100% без изменения закреплённых долей')
+    if free:
+        whole, extra = divmod(remaining, len(free))
+        for index, binding in enumerate(free):
+            binding['share'] = whole + (index < extra)
+    errors = validation_errors(result)
+    if errors:
+        raise ValueError(errors[0])
+    return result
 
 
 def same_bindings(left, right):
