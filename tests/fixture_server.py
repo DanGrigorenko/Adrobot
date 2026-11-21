@@ -4,6 +4,9 @@ import json
 from urllib.parse import parse_qs, urlsplit
 
 mode = 'initial'
+created_campaigns = []
+created_streams = []
+writes = []
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -18,13 +21,36 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         global mode
-        if self.path != '/control':
+        raw = self.rfile.read(int(self.headers.get('Content-Length', '0')))
+        if self.path == '/control':
+            mode = json.loads(raw)['mode']
+            return self.send_json({'mode': mode})
+        if self.headers.get('Api-Key') != 'fixture-only-secret':
+            return self.send_json({}, 401)
+        if self.path == '/admin_api/v1/campaigns':
+            created_campaigns.append(dict(json.loads(raw), id=100))
+            writes.append('campaign')
+        elif self.path == '/admin_api/v1/campaigns/100/streams':
+            stream = dict(json.loads(raw), id=200 + len(created_streams))
+            created_streams.append(stream)
+            writes.append(stream['type'])
+            if mode == 'lose-regular' and stream['type'] == 'regular':
+                mode = 'initial'
+                # A disconnected response after application, not a real Keitaro write.
+                self.close_connection = True
+                return
+        elif self.path == '/admin_api/v1/campaigns/100/enable':
+            if raw or len(created_streams) != 2:
+                return self.send_json({'error': 'enable must be bodyless and follow both streams'}, 400)
+            created_campaigns[0]['state'] = 'active'
+            writes.append('enable')
+        else:
             return self.send_json({}, 404)
-        body = json.loads(self.rfile.read(int(self.headers.get('Content-Length', '0'))))
-        mode = body['mode']
-        self.send_json({'mode': mode})
+        self.send_json({})
 
     def do_GET(self):
+        if self.path == '/control':
+            return self.send_json({'campaigns': created_campaigns, 'streams': created_streams, 'writes': writes})
         if self.headers.get('Api-Key') != 'fixture-only-secret':
             return self.send_json({'error': 'missing or wrong API key'}, 401)
         if mode == 'failure':
@@ -46,8 +72,12 @@ class Handler(BaseHTTPRequestHandler):
         if urlsplit(self.path).path == '/admin_api/v1/campaigns':
             # Simulate a server capped at one result per page, regardless of requested limit.
             offset = int(parse_qs(urlsplit(self.path).query).get('offset', ['0'])[0])
-            campaigns = [{'id': 12, 'name': 'Лето — основные офферы'}, {'id': 120, 'name': 'Осень'}]
+            campaigns = [{'id': 12, 'name': 'Лето — основные офферы'}, {'id': 120, 'name': 'Осень'}] + created_campaigns
             return self.send_json(campaigns[offset:offset + 1])
+        if self.path == '/admin_api/v1/campaigns/100':
+            return self.send_json(created_campaigns[0] if created_campaigns else {}, 200 if created_campaigns else 404)
+        if self.path == '/admin_api/v1/campaigns/100/streams':
+            return self.send_json(created_streams)
         if self.path == '/admin_api/v1/domains':
             return self.send_json([{'id': 2, 'name': 'tracking.example'}])
         if self.path == '/admin_api/v1/groups?type=campaigns':

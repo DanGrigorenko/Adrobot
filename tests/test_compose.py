@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_packaged_ui_real_adapter_and_drafts_survive_container_recreation():
-    compose = ['docker', 'compose', '-p', 'adrobot-issue12-test', '-f', 'compose.yml', '-f', 'compose.test.yml']
+    compose = ['docker', 'compose', '-p', 'adrobot-issue11-test', '-f', 'compose.yml', '-f', 'compose.test.yml']
     app_url = f"http://127.0.0.1:{os.getenv('TEST_APP_PORT', '18080')}"
     fixture_url = f"http://127.0.0.1:{os.getenv('TEST_FIXTURE_PORT', '18081')}"
     def run(*args, check=True):
@@ -58,6 +58,28 @@ def test_packaged_ui_real_adapter_and_drafts_survive_container_recreation():
             assert client.post('/api/creator/preview', headers=headers, json={
                 'name': 'campaign1', 'geos': ['XX'], 'offer_id': 9}).status_code == 422
             assert client.post('/api/campaigns', headers=headers, json={}).status_code == 405
+            httpx.post(f'{fixture_url}/control', json={'mode': 'lose-regular'}).raise_for_status()
+            created = client.post('/api/creator/operations', headers=headers, json={
+                'operation_id': 'fe795f9d-0920-4572-a17f-d27ab4f3f096',
+                'name': 'Packaged campaign', 'geos': ['DE', 'FR'], 'offer_id': 9,
+            })
+            assert created.status_code == 200
+            creation_path = f"/api/creator/operations/{created.json()['id']}/continue"
+            unknown = client.post(creation_path, headers=headers).json()
+            assert unknown['status'] == 'unknown', unknown
+            assert unknown['step'] == 'regular'
+            run('up', '-d', '--force-recreate', 'app')
+            wait_ready()
+            assert client.get('/api/creator/operations').json() == [unknown]
+            completed = client.post(creation_path, headers=headers).json()
+            assert completed['status'] == 'succeeded', completed
+            assert completed['keitaro_url'].endswith('/campaigns/100')
+            assert client.post(creation_path, headers=headers).json() == completed
+            evidence = httpx.get(f'{fixture_url}/control').json()
+            assert evidence['writes'] == ['campaign', 'regular', 'default', 'enable']
+            assert evidence['campaigns'][0]['state'] == 'active'
+            assert len(evidence['streams']) == 2
+            httpx.post(f'{fixture_url}/control', json={'mode': 'initial'}).raise_for_status()
             streams = client.get('/api/campaigns/12/streams').json()
             assert streams[0]['offers'][0]['name'] == 'Оффер А'
             assert streams[0]['draft']['base'][0]['share'] == 70
