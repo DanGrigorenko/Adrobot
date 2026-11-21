@@ -26,6 +26,10 @@ def edit_binding(bindings, offer_id, action, share=None):
         target['pinned'] = False
     else:
         raise ValueError('Неизвестное действие')
+    return redistribute(result)
+
+
+def redistribute(result):
     active = [b for b in result if b['state'] == 'active']
     pinned = [b for b in active if b['pinned']]
     if any(type(b['share']) is not int or not 0 <= b['share'] <= 100 for b in pinned):
@@ -65,7 +69,7 @@ def validation_errors(bindings):
 
 def open_streams(keitaro, store, campaign_id):
     streams = keitaro.streams(campaign_id)
-    catalogue = {o['id']: o['name'] for o in keitaro.offers()} if any(s.get('offers') for s in streams) else {}
+    catalogue = {o['id']: o['name'] for o in keitaro.offers()} if streams else {}
     result = []
     for stream in streams:
         offers = [{k: b[k] for k in ('offer_id', 'share', 'state')} for b in stream.get('offers', [])]
@@ -76,7 +80,9 @@ def open_streams(keitaro, store, campaign_id):
             'type': stream.get('type', ''), 'schema': stream.get('schema', ''),
             'offers': [dict(b, name=catalogue.get(b['offer_id'], 'Оффер недоступен в каталоге')) for b in offers],
             'offer_names': {str(b['offer_id']): catalogue.get(b['offer_id'], 'Оффер недоступен в каталоге')
-                            for b in (draft['bindings'] if draft else offers)},
+                            for b in (draft['bindings'] + draft['removed'] if draft else offers)},
+            'unavailable_offers': {str(b['offer_id']): 'Оффер недоступен в каталоге; возврат запрещён'
+                                   for b in (draft['removed'] if draft else []) if b['offer_id'] not in catalogue},
             'editable': editable, 'draft': draft,
             'read_only_reason': None if editable else 'Этот тип или схема потока доступны только для просмотра',
             'conflict': draft is not None and not same_bindings(draft['base'], offers),

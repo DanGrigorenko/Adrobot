@@ -6,7 +6,8 @@ type Binding = { offer_id: number; share: unknown; state: string; pinned?: boole
 type Stream = {
   id: number; name: string; type: string; schema: string; editable: boolean;
   offers: Binding[]; offer_names: Record<string, string>; read_only_reason: string | null;
-  draft: { version: number; base: Binding[]; bindings: Binding[] } | null;
+  draft: { version: number; base: Binding[]; bindings: Binding[]; removed: Binding[] } | null;
+  unavailable_offers: Record<string, string>;
   conflict: boolean; validation_errors: string[];
 };
 
@@ -21,7 +22,7 @@ function displayShare(value: unknown): string {
   return `${typeof value === 'object' ? JSON.stringify(value) : String(value)}%`;
 }
 
-type EditAction = (action: 'share' | 'pin' | 'unpin', offerId: number, share?: number) => void;
+type EditAction = (action: 'share' | 'pin' | 'unpin' | 'add' | 'remove' | 'bring_back', offerId: number, share?: number) => void;
 
 function ShareInput({ binding, disabled, onEdit }: { binding: Binding; disabled: boolean; onEdit: EditAction }) {
   const id = useId();
@@ -41,7 +42,7 @@ function Bindings({ bindings, names, label, showPins, onEdit, busy = false }: {
   return <div className="table-scroll" tabIndex={0} role="region" aria-label={label}>
     <table>
       <caption className="sr-only">{label}</caption>
-      <thead><tr><th scope="col">Оффер</th><th scope="col">Доля</th><th scope="col">Статус</th>{showPins && <th scope="col">Закрепление (Pin)</th>}</tr></thead>
+      <thead><tr><th scope="col">Оффер</th><th scope="col">Доля</th><th scope="col">Статус</th>{showPins && <th scope="col">Закрепление (Pin)</th>}{onEdit && <th scope="col">Действие</th>}</tr></thead>
       <tbody>{bindings.map((binding, index) => <tr key={`${binding.offer_id}-${index}`}>
         <th scope="row"><span className="offer-name">{binding.name ?? names[String(binding.offer_id)] ?? 'Оффер недоступен в каталоге'}</span><span className="entity-id">ID {binding.offer_id}</span></th>
         <td className="share">{onEdit && binding.state === 'active' ? <ShareInput binding={binding} disabled={busy} onEdit={onEdit} /> : displayShare(binding.share)}</td>
@@ -49,8 +50,43 @@ function Bindings({ bindings, names, label, showPins, onEdit, busy = false }: {
           {binding.state === 'active' ? 'Активна' : binding.state === 'disabled' ? 'Отключена (disabled)' : `Неизвестный статус: ${binding.state}`}
         </span></td>
         {showPins && <td><span>{binding.pinned ? 'Закреплена' : 'Не закреплена'}</span>{onEdit && binding.state === 'active' && <button className="pin-button" disabled={busy} aria-pressed={Boolean(binding.pinned)} onClick={() => onEdit(binding.pinned ? 'unpin' : 'pin', binding.offer_id)}>{binding.pinned ? 'Открепить (Unpin)' : 'Закрепить (Pin)'}</button>}</td>}
+        {onEdit && <td><button disabled={busy} onClick={() => onEdit('remove', binding.offer_id)} aria-label={`Удалить оффер ${binding.offer_id}`}>Удалить (Remove)</button></td>}
       </tr>)}</tbody>
     </table>
+  </div>;
+}
+
+function OfferSearch({ draft, disabled, onEdit }: { draft: NonNullable<Stream['draft']>; disabled: boolean; onEdit: EditAction }) {
+  const id = useId();
+  const [input, setInput] = useState('');
+  const [query, setQuery] = useState<string | null>(null);
+  const [attempt, setAttempt] = useState(0);
+  const [results, setResults] = useState<{ id: number; name: string }[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  useEffect(() => {
+    if (query === null) return;
+    const controller = new AbortController();
+    setLoading(true); setError('');
+    read<{ id: number; name: string }[]>(`/api/offers?q=${encodeURIComponent(query)}`, controller.signal)
+      .then(setResults)
+      .catch((failure: Error) => { if (!controller.signal.aborted) setError(failure.message); })
+      .finally(() => { if (!controller.signal.aborted) setLoading(false); });
+    return () => controller.abort();
+  }, [query, attempt]);
+  return <div className="offer-search">
+    <form onSubmit={event => { event.preventDefault(); setQuery(input.trim()); setAttempt(n => n + 1); }}>
+      <label htmlFor={id}>Добавить существующий оффер — название или точный ID</label>
+      <div className="search-controls"><input id={id} type="search" value={input} onChange={event => setInput(event.target.value)} /><button disabled={disabled || loading}>Найти оффер</button></div>
+    </form>
+    {loading && <p role="status">Поиск офферов…</p>}
+    {error && <p role="alert">{error} Повторите поиск.</p>}
+    {query !== null && !loading && !error && <><p role="status">{results.length ? `Найдено офферов: ${results.length}` : 'Офферы не найдены. Измените название или ID.'}</p>
+      <ul className="offer-results">{results.map(offer => {
+        const exists = draft.bindings.some(b => b.offer_id === offer.id);
+        const removed = draft.removed.some(b => b.offer_id === offer.id);
+        return <li key={offer.id}><span>{offer.name} <span className="entity-id">ID {offer.id}</span></span><button disabled={disabled || exists} onClick={() => onEdit(removed ? 'bring_back' : 'add', offer.id)}>{exists ? 'Уже в потоке (включая disabled)' : removed ? 'Вернуть (Bring Back)' : 'Добавить (Add)'}</button></li>;
+      })}</ul></>}
   </div>;
 }
 
@@ -59,7 +95,7 @@ function StreamPanel({ stream, campaignId, onRefresh, disabled }: { stream: Stre
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const inFlight = useRef(false);
-  async function edit(action: 'share' | 'pin' | 'unpin', offerId: number, share?: number) {
+  async function edit(action: 'share' | 'pin' | 'unpin' | 'add' | 'remove' | 'bring_back', offerId: number, share?: number) {
     if (!stream.draft || inFlight.current) return;
     inFlight.current = true;
     setBusy(true); setError(''); setMessage('');
@@ -69,7 +105,7 @@ function StreamPanel({ stream, campaignId, onRefresh, disabled }: { stream: Stre
         body: JSON.stringify({ version: stream.draft.version, action, offer_id: offerId, ...(action === 'share' ? { share } : {}) }),
       });
       const data = await response.json();
-      if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : 'Доля должна быть целым числом от 0 до 100.');
+      if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : 'Недопустимое действие. Перечитайте потоки и проверьте введённые данные.');
       setMessage('Черновик сохранён. Keitaro не изменён.');
       onRefresh();
     } catch (failure) { setError(failure instanceof Error ? failure.message : 'Не удалось сохранить. Обновите потоки перед повтором.'); }
@@ -90,6 +126,16 @@ function StreamPanel({ stream, campaignId, onRefresh, disabled }: { stream: Stre
       {message && <p className="draft-note" role="status">{message}</p>}
       {error && <div className="notice error" role="alert">{error} <button onClick={onRefresh}>Перечитать потоки</button></div>}
       <Bindings bindings={stream.draft.bindings} names={stream.offer_names} label={`Черновик потока ${stream.id}`} showPins onEdit={edit} busy={busy || disabled} />
+      <OfferSearch draft={stream.draft} disabled={busy || disabled} onEdit={edit} />
+      <details className="comparison removed-history">
+        <summary>Удалённые (Removed) · {stream.draft.removed.length}</summary>
+        <p className="history-note">Прежние доля, статус и Pin сохранены. Раскрытие и скрытие не изменяют черновик.</p>
+        {stream.draft.removed.length ? <ul className="offer-results">{stream.draft.removed.map(binding => <li key={binding.offer_id}>
+          <div><strong>{stream.offer_names[String(binding.offer_id)]}</strong><span className="entity-id">ID {binding.offer_id}</span><p>{displayShare(binding.share)} · {binding.state === 'disabled' ? 'Отключена (disabled)' : 'Активна'} · {binding.pinned ? 'Закреплена (Pin)' : 'Не закреплена'}</p>
+            {stream.unavailable_offers[String(binding.offer_id)] && <p>{stream.unavailable_offers[String(binding.offer_id)]}</p>}</div>
+          <button disabled={busy || disabled || Boolean(stream.unavailable_offers[String(binding.offer_id)])} onClick={() => edit('bring_back', binding.offer_id)} aria-label={`Вернуть оффер ${binding.offer_id}`}>Вернуть (Bring Back)</button>
+        </li>)}</ul> : <p className="history-note">Удалённых привязок пока нет.</p>}
+      </details>
       {stream.conflict && <details className="comparison"><summary>Сравнить базу и текущее состояние Keitaro</summary><h4>База черновика</h4><Bindings bindings={stream.draft.base} names={stream.offer_names} label={`База потока ${stream.id}`} showPins={false} /><h4>Сейчас в Keitaro</h4><Bindings bindings={stream.offers} names={stream.offer_names} label={`Текущее состояние потока ${stream.id}`} showPins={false} /></details>}
     </> : <>
       <p className="readonly-note">{stream.read_only_reason}. Черновик не создаётся; маршрутизация не меняется.</p>

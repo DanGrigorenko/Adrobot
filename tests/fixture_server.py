@@ -49,7 +49,7 @@ class Handler(BaseHTTPRequestHandler):
             campaigns = [{'id': 12, 'name': 'Лето — основные офферы'}, {'id': 120, 'name': 'Осень'}]
             return self.send_json(campaigns[offset:offset + 1])
         if self.path == '/admin_api/v1/offers':
-            return self.send_json([{'id': 9, 'name': 'Оффер А'}, {'id': 10, 'name': 'Оффер Б'}])
+            return self.send_json([{'id': 9, 'name': 'Оффер А'}, {'id': 10, 'name': 'Оффер Б'}, {'id': 11, 'name': 'Оффер В'}])
         if self.path == '/admin_api/v1/campaigns/12/streams':
             offers = [{'offer_id': 9, 'share': 70, 'state': 'active'}, {'offer_id': 10, 'share': 30, 'state': 'active'}]
             if mode == 'changed':
