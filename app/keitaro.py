@@ -1,4 +1,4 @@
-"""Small read-only Admin API v1 adapter. Credentials never leave this boundary."""
+"""Small Admin API v1 adapter. Credentials never leave this boundary."""
 from typing import Any, Protocol
 from urllib.parse import urlsplit
 
@@ -13,11 +13,28 @@ class KeitaroClient(Protocol):
     def domains(self) -> list[dict]: ...
     def groups(self) -> list[dict]: ...
     def traffic_sources(self) -> list[dict]: ...
+    def campaign(self, campaign_id: int) -> dict: ...
+    def create_campaign(self, payload: dict) -> None: ...
+    def create_stream(self, campaign_id: int, payload: dict) -> None: ...
+    def enable_campaign(self, campaign_id: int) -> None: ...
 
 
 class NamedEntity(BaseModel):
     id: StrictInt
     name: str
+
+
+class CampaignSummary(NamedEntity):
+    alias: str | None = None
+
+
+class Campaign(CampaignSummary):
+    alias: str
+    state: str
+    type: str
+    domain_id: StrictInt
+    group_id: StrictInt
+    traffic_source_id: StrictInt
 
 
 class Binding(BaseModel):
@@ -34,6 +51,9 @@ class Stream(BaseModel):
     type: str
     stream_schema: str = Field(alias='schema')
     offers: list[Binding] = Field(default_factory=list)
+    action_type: str | None = None
+    action_payload: Any = None
+    filters: list[dict] = Field(default_factory=list)
 
 
 def validate_base_url(value):
@@ -71,7 +91,7 @@ class HttpKeitaro:
         results = []
         seen = set()
         while True:
-            page = self._list('campaigns', NamedEntity, {'limit': 100, 'offset': len(results)})
+            page = self._list('campaigns', CampaignSummary, {'limit': 100, 'offset': len(results)})
             if not page:
                 return results
             ids = {c['id'] for c in page}
@@ -95,6 +115,31 @@ class HttpKeitaro:
 
     def traffic_sources(self):
         return self._list('traffic_sources', NamedEntity)
+
+    def campaign(self, campaign_id):
+        try:
+            response = self._http.get(f'campaigns/{campaign_id}')
+            response.raise_for_status()
+            return Campaign.model_validate(response.json()).model_dump()
+        except (httpx.HTTPError, ValueError, ValidationError):
+            raise ConnectionError('Не удалось проверить кампанию в Keitaro') from None
+
+    def _post(self, path, **kwargs):
+        try:
+            response = self._http.post(path, **kwargs)
+            response.raise_for_status()
+        except httpx.HTTPError:
+            # Even an error status does not prove that a write was not applied.
+            raise ConnectionError('Исход записи Keitaro не подтверждён') from None
+
+    def create_campaign(self, payload):
+        self._post('campaigns', json=payload)
+
+    def create_stream(self, campaign_id, payload):
+        self._post(f'campaigns/{campaign_id}/streams', json=payload)
+
+    def enable_campaign(self, campaign_id):
+        self._post(f'campaigns/{campaign_id}/enable')
 
     def close(self):
         self._http.close()
