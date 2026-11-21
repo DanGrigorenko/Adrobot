@@ -70,6 +70,10 @@ def validation_errors(bindings):
     return []
 
 
+def stream_is_editable(stream):
+    return stream is not None and stream.get('type') in ('regular', 'default') and stream.get('schema') == 'landings'
+
+
 def open_streams(keitaro, store, campaign_id):
     streams = keitaro.streams(campaign_id)
     saved = store.existing(campaign_id)
@@ -79,7 +83,7 @@ def open_streams(keitaro, store, campaign_id):
     result = []
     for stream in streams:
         offers = [{k: b[k] for k in ('offer_id', 'share', 'state')} for b in stream.get('offers', [])]
-        editable = stream.get('type') in ('regular', 'default') and stream.get('schema') == 'landings'
+        editable = stream_is_editable(stream)
         draft = store.open(campaign_id, stream['id'], offers) if editable else saved.get(stream['id'])
         result.append({
             'id': stream['id'], 'name': stream.get('name', ''),

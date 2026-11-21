@@ -35,7 +35,9 @@ def test_preview_shows_validated_name_settings_and_two_routes_without_remote_wri
         'name': 'campaign1', 'geos': ['DE'], 'offer_id': 9,
     })
     assert response.status_code == 200
-    assert response.json() == {
+    summary = response.json()
+    assert summary.pop('preview_token')
+    assert summary == {
         'name': 'test_example_campaign1', 'geos': ['DE'],
         'settings': {'domain': {'id': 2, 'name': 'tracking.example'},
                      'group': {'id': 3, 'name': 'Test campaigns'},

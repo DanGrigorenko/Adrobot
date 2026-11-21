@@ -1,7 +1,7 @@
 """One durable publication per stream. Recovery reads; it never repeats a write."""
 from threading import Lock
 
-from app.editor import same_bindings
+from app.editor import same_bindings, stream_is_editable
 
 
 class Publisher:
@@ -11,7 +11,7 @@ class Publisher:
 
     def stream(self, campaign_id, stream_id):
         remote = next((s for s in self.keitaro.streams(campaign_id) if s['id'] == stream_id), None)
-        if remote is None or remote.get('type') not in ('regular', 'default') or remote.get('schema') != 'landings':
+        if not stream_is_editable(remote):
             raise RuntimeError('Поток удалён или больше не поддерживает редактирование офферов')
         return [{k: b[k] for k in ('offer_id', 'share', 'state')} for b in remote.get('offers', [])]
 

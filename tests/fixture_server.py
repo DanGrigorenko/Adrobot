@@ -126,6 +126,11 @@ class Handler(BaseHTTPRequestHandler):
                     {'offer_id': 9, 'share': 100, 'state': 'active'}, {'offer_id': 10, 'share': 30, 'state': 'disabled'}]},
             ])
         if self.path == '/admin_api/v1/campaigns/120/streams':
+            if mode == 'raw-shares':
+                return self.send_json([
+                    {'id': 20 + index, 'name': 'Исходная доля', 'type': 'default', 'schema': 'landings',
+                     'offers': [{'offer_id': 9, 'share': share, 'state': 'active'}]}
+                    for index, share in enumerate([True, {'raw': 7}, 'not-a-number', 33.333333333333336])])
             return self.send_json([])
         self.send_json({}, 404)
 

@@ -4,7 +4,7 @@ import type { FormEvent } from 'react';
 type Entity = { id: number; name: string };
 type Settings = { domain: Entity; group: Entity; traffic_source: Entity; name_prefix: string };
 type Preview = {
-  name: string; geos: string[]; settings: Settings;
+  name: string; geos: string[]; settings: Settings; preview_token: string;
   default: { offers: { offer_id: number; name: string; share: number; state: string }[] };
 };
 
@@ -91,7 +91,7 @@ export function Creator() {
     try {
       const operation = await request<Operation>('/api/creator/operations', {
         method: 'POST', headers: mutationHeaders,
-        body: JSON.stringify({ operation_id: id, name: preview.name, geos: preview.geos, offer_id: preview.default.offers[0].offer_id }),
+        body: JSON.stringify({ operation_id: id, name: preview.name, geos: preview.geos, offer_id: preview.default.offers[0].offer_id, preview_token: preview.preview_token }),
       });
       remember(operation);
       setPreview(null);

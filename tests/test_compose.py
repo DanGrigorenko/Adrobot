@@ -78,9 +78,12 @@ def test_packaged_ui_real_adapter_and_drafts_survive_container_recreation():
                 'name': 'campaign1', 'geos': ['XX'], 'offer_id': 9}).status_code == 422
             assert client.post('/api/campaigns', headers=headers, json={}).status_code == 405
             httpx.post(f'{fixture_url}/control', json={'mode': 'lose-regular'}).raise_for_status()
+            creation_inputs = {'name': 'Packaged campaign', 'geos': ['DE', 'FR'], 'offer_id': 9}
+            reviewed = client.post('/api/creator/preview', headers=headers, json=creation_inputs)
+            assert reviewed.status_code == 200
             created = client.post('/api/creator/operations', headers=headers, json={
                 'operation_id': 'fe795f9d-0920-4572-a17f-d27ab4f3f096',
-                'name': 'Packaged campaign', 'geos': ['DE', 'FR'], 'offer_id': 9,
+                **creation_inputs, 'preview_token': reviewed.json()['preview_token'],
             })
             assert created.status_code == 200
             creation_path = f"/api/creator/operations/{created.json()['id']}/continue"
@@ -236,6 +239,15 @@ def test_packaged_ui_real_adapter_and_drafts_survive_container_recreation():
             assert client.post('/api/campaigns', headers={'Origin': 'https://attacker.invalid'}).status_code == 403
             assert client.get('/api/not-found').status_code == 404
             assert client.get('/api/creator/operations').headers['cache-control'] == 'no-store'
+            httpx.post(f'{fixture_url}/control', json={'mode': 'raw-shares'}).raise_for_status()
+            raw_streams = client.get('/api/campaigns/120/streams').json()
+            raw_shares = [s['draft']['bindings'][0]['share'] for s in raw_streams]
+            assert raw_shares == [True, {'raw': 7}, 'not-a-number', 33.333333333333336]
+            assert type(raw_shares[0]) is bool
+            for stream in raw_streams:
+                assert stream['validation_errors']
+                assert client.post(f"/api/campaigns/120/streams/{stream['id']}/push", headers=headers,
+                                   json={'version': stream['draft']['version']}).status_code == 422
             httpx.post(f'{fixture_url}/control', json={'mode': 'long-names'}).raise_for_status()
             assert client.get('/api/offers', params={'q': '11'}).json() == [
                 {'id': 11, 'name': 'Длинноеназваниеоффера' * 12}]

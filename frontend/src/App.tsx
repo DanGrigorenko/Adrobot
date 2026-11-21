@@ -21,16 +21,17 @@ async function read<T>(path: string, signal: AbortSignal): Promise<T> {
 
 function displayShare(value: unknown): string {
   if (value === null || value === undefined) return 'Не задана';
-  return `${typeof value === 'object' ? JSON.stringify(value) : String(value)}%`;
+  return `${JSON.stringify(value)}%`;
 }
 
 type EditAction = (action: 'share' | 'pin' | 'unpin' | 'add' | 'remove' | 'bring_back', offerId: number, share?: number) => void;
 
 function ShareInput({ binding, disabled, onEdit }: { binding: Binding; disabled: boolean; onEdit: EditAction }) {
   const id = useId();
-  const [value, setValue] = useState(String(binding.share ?? ''));
-  useEffect(() => setValue(String(binding.share ?? '')), [binding.share]);
+  const [value, setValue] = useState(typeof binding.share === 'number' ? String(binding.share) : '');
+  useEffect(() => setValue(typeof binding.share === 'number' ? String(binding.share) : ''), [binding.share]);
   return <form className="share-form" onSubmit={event => { event.preventDefault(); onEdit('share', binding.offer_id, Number(value)); }}>
+    <span>Сохранённая доля: {displayShare(binding.share)}</span>
     <label className="sr-only" htmlFor={id}>Доля оффера {binding.offer_id}, %</label>
     <input id={id} aria-label={`Доля оффера ${binding.offer_id}, %`} type="number" min="0" max="100" step="1" required value={value} disabled={disabled} onChange={event => setValue(event.target.value)} />
     <button disabled={disabled} type="submit" aria-label={`Применить долю оффера ${binding.offer_id}`}>Применить</button>

@@ -12,7 +12,7 @@ from pydantic import BaseModel, ConfigDict, StrictBool, StrictInt
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from app.creator import Creator, CreationInput, PreviewInput, final_name, preview, settings
-from app.editor import open_streams
+from app.editor import open_streams, stream_is_editable
 from app.keitaro import HttpKeitaro, validate_base_url
 from app.storage import DraftStore
 from app.publication import Publisher
@@ -203,7 +203,7 @@ def create_app(keitaro=None, *, database_url=None, keitaro_url=None, frontend_di
     def edit(campaign_id: int, stream_id: int, body: DraftAction):
         try:
             remote = next((s for s in keitaro.streams(campaign_id) if s['id'] == stream_id), None)
-            if remote is None or remote.get('type') not in ('regular', 'default') or remote.get('schema') != 'landings':
+            if not stream_is_editable(remote):
                 raise HTTPException(status_code=409, detail='Поток больше не поддерживает редактирование офферов')
             catalogue = {o['id'] for o in keitaro.offers()} if body.action in ('add', 'bring_back') else None
             return store.edit(campaign_id, stream_id, body.version, body.action, body.offer_id, body.share, catalogue)
@@ -222,7 +222,7 @@ def create_app(keitaro=None, *, database_url=None, keitaro_url=None, frontend_di
             raise HTTPException(status_code=422, detail='Подтвердите отбрасывание черновика')
         try:
             remote = next((s for s in keitaro.streams(campaign_id) if s['id'] == stream_id), None)
-            if remote is None or remote.get('type') not in ('regular', 'default') or remote.get('schema') != 'landings':
+            if not stream_is_editable(remote):
                 raise HTTPException(status_code=409, detail='Поток удалён или больше не поддерживает редактирование. Черновик сохранён.')
             # Complete all reads before acquiring SQLite's writer lock.
             keitaro.offers()
