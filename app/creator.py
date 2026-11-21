@@ -2,6 +2,8 @@
 from threading import Lock
 from uuid import UUID
 import os
+import hashlib
+import json
 
 import pycountry
 from pydantic import BaseModel, Field, StrictInt, field_validator
@@ -23,6 +25,7 @@ class PreviewInput(BaseModel):
 
 class CreationInput(PreviewInput):
     operation_id: UUID
+    preview_token: str
 
 
 def settings(remote):
@@ -63,7 +66,7 @@ def preview(remote, data):
     offers = [offer for offer in remote.offers() if offer['id'] == data.offer_id]
     if len(offers) != 1:
         raise ValueError('Выбранный оффер недоступен в Keitaro; выберите другой')
-    return {
+    summary = {
         'name': name, 'geos': data.geos, 'settings': config,
         'campaign': {'state': 'disabled', 'type': 'position'},
         'regular': {'type': 'regular', 'schema': 'redirect', 'action_type': 'http',
@@ -73,6 +76,10 @@ def preview(remote, data):
                     'offers': [{'offer_id': data.offer_id, 'name': offers[0]['name'],
                                 'share': 100, 'state': 'active'}]},
     }
+    # Content identity survives restarts without retaining a process-local preview.
+    summary['preview_token'] = hashlib.sha256(
+        json.dumps(summary, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+    return summary
 
 
 class Creator:
@@ -105,7 +112,7 @@ class Creator:
     def _run(self, op):
         remote = self.remote
         if 'plan' not in op:
-            summary = preview(remote, PreviewInput(**op['inputs']))
+            summary = self._reviewed_preview(op)
             campaign = dict(summary['campaign'], name=summary['name'], alias=op['alias'])
             for key in ('domain', 'group', 'traffic_source'):
                 campaign[key + '_id'] = summary['settings'][key]['id']
@@ -165,12 +172,16 @@ class Creator:
         op.update(pending=False, status='ready', reason=None)
         self.store.save_creation(op)
 
+    def _reviewed_preview(self, op):
+        summary = preview(self.remote, PreviewInput(**op['inputs']))
+        if op['inputs'].get('preview_token') != summary['preview_token']:
+            raise ValueError('Проверенное резюме изменилось. Покажите новое резюме и подтвердите его до создания.')
+        return summary
+
     def _write(self, op, step, write):
         # Recheck catalogue/configuration before every new write. Reads on a pending
         # step remain available even when configuration is temporarily unavailable.
-        config = settings(self.remote)
-        if not any(o['id'] == op['inputs']['offer_id'] for o in self.remote.offers()):
-            raise ValueError('Выбранный оффер недоступен в Keitaro')
+        config = self._reviewed_preview(op)['settings']
         for key in ('domain', 'group', 'traffic_source'):
             if config[key]['id'] != op['plan']['campaign'][key + '_id']:
                 raise ValueError('Настройки сервера изменились после сохранения операции')

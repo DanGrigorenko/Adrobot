@@ -58,9 +58,56 @@ def setup_creation(tmp_path, monkeypatch):
 def prepare(client, **changes):
     body = {'operation_id': str(uuid4()), 'name': 'Summer', 'geos': ['DE', 'FR', 'DE'], 'offer_id': 9}
     body.update(changes)
+    if 'preview_token' not in body:
+        reviewed = client.post('/api/creator/preview', headers=HEADERS, json=body)
+        assert reviewed.status_code == 200, reviewed.text
+        body['preview_token'] = reviewed.json()['preview_token']
     response = client.post('/api/creator/operations', headers=HEADERS, json=body)
     assert response.status_code == 200, response.text
     return response.json()
+
+
+@pytest.mark.parametrize('confirm_before_restart', [False, True])
+@pytest.mark.parametrize('change', ['prefix', 'domain', 'group', 'traffic_source'])
+def test_reviewed_configuration_cannot_change_across_restart_before_first_write(
+        setup_creation, monkeypatch, confirm_before_restart, change):
+    remote, db = setup_creation
+    with TestClient(create_app(remote, database_url=db)) as client:
+        reviewed = client.post('/api/creator/preview', headers=HEADERS, json={
+            'name': 'Summer', 'geos': ['DE'], 'offer_id': 9}).json()
+        confirmation = dict(name=reviewed['name'], geos=reviewed['geos'],
+                            preview_token=reviewed['preview_token'])
+        if confirm_before_restart:
+            op = prepare(client, **confirmation)
+    if change == 'prefix':
+        monkeypatch.setenv('CREATOR_NAME_PREFIX', 'changed_')
+    else:
+        catalogue = {'domain': 'domains', 'group': 'groups', 'traffic_source': 'traffic_sources'}[change]
+        setattr(remote, catalogue, lambda: [{'id': 99, 'name': 'Changed setting'}])
+        monkeypatch.setenv(f'CREATOR_{change.upper()}_ID', '99')
+    with TestClient(create_app(remote, database_url=db)) as client:
+        if not confirm_before_restart:
+            op = prepare(client, **confirmation)
+        result = resume(client, op)
+        assert result['status'] == 'blocked'
+        assert result['reason']
+        assert remote.writes == []
+        # Only reviewing and confirming the changed configuration permits creation.
+        fresh = prepare(client)
+        assert resume(client, fresh)['status'] == 'succeeded'
+
+
+def test_changed_prefix_blocks_new_writes_when_continuing_reviewed_plan(setup_creation, monkeypatch):
+    remote, db = setup_creation
+    remote.lose = 'regular'
+    with TestClient(create_app(remote, database_url=db)) as client:
+        op = prepare(client)
+        assert resume(client, op)['status'] == 'unknown'
+    monkeypatch.setenv('CREATOR_NAME_PREFIX', 'changed_')
+    with TestClient(create_app(remote, database_url=db)) as client:
+        result = resume(client, op)
+        assert result['status'] == 'blocked'
+        assert remote.writes == ['campaign', 'regular']
 
 
 def resume(client, op):
@@ -203,7 +250,8 @@ def test_repeated_identity_and_concurrent_continuation_share_one_durable_operati
         same = prepare(client, operation_id=op['id'])
         assert same == op
         conflict = client.post('/api/creator/operations', headers=HEADERS, json={
-            'operation_id': op['id'], 'name': 'different', 'geos': ['DE', 'FR'], 'offer_id': 9})
+            'operation_id': op['id'], 'name': 'different', 'geos': ['DE', 'FR'], 'offer_id': 9,
+            'preview_token': op['inputs']['preview_token']})
         assert conflict.status_code == 409
         running = pool.submit(resume, client, op)
         try:
