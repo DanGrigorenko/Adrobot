@@ -22,7 +22,7 @@ def test_initial_draft_survives_database_reopen_and_remote_changes(tmp_path):
         assert first.status_code == 200
         draft = first.json()[0]['draft']
         assert draft == {
-            'version': 1,
+            'version': 1, 'removed': [],
             'base': [{'offer_id': 9, 'share': 70, 'state': 'active'},
                      {'offer_id': 10, 'share': 30, 'state': 'active'}],
             'bindings': [{'offer_id': 9, 'share': 70, 'state': 'active', 'pinned': False},

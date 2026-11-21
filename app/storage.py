@@ -22,6 +22,7 @@ class Draft(Base):
     version: Mapped[int] = mapped_column(Integer, nullable=False)
     base: Mapped[list] = mapped_column(JSON, nullable=False)
     bindings: Mapped[list] = mapped_column(JSON, nullable=False)
+    removed: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
 
 
 class Creation(Base):
@@ -56,10 +57,10 @@ class DraftStore:
                 base=deepcopy(offers), bindings=bindings,
             ).on_conflict_do_nothing(index_elements=['stream_id']))
             draft = session.scalar(select(Draft).where(Draft.stream_id == stream_id))
-            return {'version': draft.version, 'base': draft.base, 'bindings': draft.bindings}
+            return {'version': draft.version, 'base': draft.base, 'bindings': draft.bindings, 'removed': draft.removed}
 
-    def edit(self, campaign_id, stream_id, version, action, offer_id, share):
-        from app.editor import edit_binding
+    def edit(self, campaign_id, stream_id, version, action, offer_id, share, catalogue=None):
+        from app.editor import edit_binding, redistribute
 
         with Session(self.engine) as session, session.begin():
             # Acquire SQLite's writer lock before reading the expected version.
@@ -70,9 +71,35 @@ class DraftStore:
                 raise LookupError('Сначала загрузите черновик потока')
             if draft.version != version:
                 raise RuntimeError('Черновик изменён в другой вкладке. Перечитайте потоки.')
-            draft.bindings = edit_binding(draft.bindings, offer_id, action, share)
+            if action in ('remove', 'bring_back'):
+                bindings, removed = deepcopy(draft.bindings), deepcopy(draft.removed)
+                source, destination = (bindings, removed) if action == 'remove' else (removed, bindings)
+                matches = [b for b in source if b['offer_id'] == offer_id]
+                if len(matches) != 1:
+                    raise ValueError('Привязка не найдена или ID повторяется')
+                target = matches[0]
+                if action == 'bring_back' and offer_id not in catalogue:
+                    raise ValueError('Оффер недоступен в каталоге; возврат запрещён')
+                source.remove(target)
+                destination.append(target)
+                if target['state'] == 'active':
+                    if not any(b['state'] == 'active' for b in bindings):
+                        raise ValueError('Нельзя удалить последнюю активную привязку')
+                    redistribute(bindings)
+                draft.bindings, draft.removed = bindings, removed
+            elif action == 'add':
+                if any(b['offer_id'] == offer_id for b in draft.removed):
+                    raise ValueError('Оффер в Removed: используйте Bring Back (Вернуть)')
+                if any(b['offer_id'] == offer_id for b in draft.bindings):
+                    raise ValueError('Оффер уже есть в потоке, включая disabled')
+                if offer_id not in catalogue:
+                    raise ValueError('Оффер недоступен в каталоге')
+                bindings = draft.bindings + [dict(offer_id=offer_id, share=0, state='active', pinned=False)]
+                draft.bindings = edit_binding(bindings, offer_id, 'unpin')
+            else:
+                draft.bindings = edit_binding(draft.bindings, offer_id, action, share)
             draft.version += 1
-            return {'version': draft.version, 'base': draft.base, 'bindings': draft.bindings}
+            return {'version': draft.version, 'base': draft.base, 'bindings': draft.bindings, 'removed': draft.removed}
 
     def prepare_creation(self, operation_id, inputs):
         with Session(self.engine) as session, session.begin():
