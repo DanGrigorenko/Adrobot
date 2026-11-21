@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_packaged_ui_real_adapter_and_drafts_survive_container_recreation():
-    compose = ['docker', 'compose', '-p', 'adrobot-issue12-test', '-f', 'compose.yml', '-f', 'compose.test.yml']
+    compose = ['docker', 'compose', '-p', 'adrobot-issue13-test', '-f', 'compose.yml', '-f', 'compose.test.yml']
     app_url = f"http://127.0.0.1:{os.getenv('TEST_APP_PORT', '18080')}"
     fixture_url = f"http://127.0.0.1:{os.getenv('TEST_FIXTURE_PORT', '18081')}"
     def run(*args, check=True):
@@ -79,12 +79,25 @@ def test_packaged_ui_real_adapter_and_drafts_survive_container_recreation():
                 'version': 1, 'action': 'share', 'offer_id': offer_id, 'share': 40,
             }).status_code == 409
             assert client.get('/api/campaigns/12/streams').json()[0]['offers'][0]['share'] == 70
+            assert client.get('/api/offers', params={'q': '11'}).json() == [{'id': 11, 'name': 'Оффер В'}]
+            added = client.post(path, headers=headers, json={'version': 2, 'action': 'add', 'offer_id': 11})
+            assert added.status_code == 200
+            assert [b['share'] for b in added.json()['bindings']] == [50, 25, 25]
+            removed = client.post(path, headers=headers, json={'version': 3, 'action': 'remove', 'offer_id': offer_id})
+            assert removed.status_code == 200
+            draft = removed.json()
+            assert draft['removed'] == [dict(offer_id=offer_id, share=50, state='active', pinned=True)]
+            assert [b['share'] for b in draft['bindings']] == [50, 50]
             httpx.post(f'{fixture_url}/control', json={'mode': 'changed'}).raise_for_status()
             run('up', '-d', '--force-recreate', 'app')
             wait_ready()
             reopened = client.get('/api/campaigns/12/streams').json()[0]
             assert reopened['draft'] == draft
             assert reopened['conflict'] is True
+            returned = client.post(path, headers=headers, json={'version': 4, 'action': 'bring_back', 'offer_id': offer_id})
+            assert returned.status_code == 200
+            assert returned.json()['removed'] == []
+            assert [(b['offer_id'], b['share'], b['pinned']) for b in returned.json()['bindings']] == [(10, 25, False), (11, 25, False), (offer_id, 50, True)]
             httpx.post(f'{fixture_url}/control', json={'mode': 'failure'}).raise_for_status()
             failure = client.get('/api/campaigns')
             assert failure.status_code == 502

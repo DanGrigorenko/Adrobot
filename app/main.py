@@ -20,7 +20,7 @@ from app.storage import DraftStore
 class DraftAction(BaseModel):
     model_config = ConfigDict(extra='forbid')
     version: StrictInt
-    action: Literal['share', 'pin', 'unpin']
+    action: Literal['share', 'pin', 'unpin', 'add', 'remove', 'bring_back']
     offer_id: StrictInt
     share: StrictInt | None = None
 
@@ -147,7 +147,8 @@ def create_app(keitaro=None, *, database_url=None, keitaro_url=None, frontend_di
             remote = next((s for s in keitaro.streams(campaign_id) if s['id'] == stream_id), None)
             if remote is None or remote.get('type') not in ('regular', 'default') or remote.get('schema') != 'landings':
                 raise HTTPException(status_code=409, detail='Поток больше не поддерживает редактирование офферов')
-            return store.edit(campaign_id, stream_id, body.version, body.action, body.offer_id, body.share)
+            catalogue = {o['id'] for o in keitaro.offers()} if body.action in ('add', 'bring_back') else None
+            return store.edit(campaign_id, stream_id, body.version, body.action, body.offer_id, body.share, catalogue)
         except ConnectionError:
             raise HTTPException(status_code=502, detail='Не удалось проверить доступность потока в Keitaro') from None
         except LookupError as error:
