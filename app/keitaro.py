@@ -17,6 +17,7 @@ class KeitaroClient(Protocol):
     def create_campaign(self, payload: dict) -> None: ...
     def create_stream(self, campaign_id: int, payload: dict) -> None: ...
     def enable_campaign(self, campaign_id: int) -> None: ...
+    def update_offers(self, stream_id: int, offers: list[dict]) -> None: ...
 
 
 class NamedEntity(BaseModel):
@@ -140,6 +141,14 @@ class HttpKeitaro:
 
     def enable_campaign(self, campaign_id):
         self._post(f'campaigns/{campaign_id}/enable')
+
+    def update_offers(self, stream_id, offers):
+        try:
+            response = self._http.put(f'streams/{stream_id}', json={'offers': offers})
+            response.raise_for_status()
+        except httpx.HTTPError:
+            # No retry: even an error response may follow a partially applied write.
+            raise ConnectionError('Исход публикации Keitaro не подтверждён') from None
 
     def close(self):
         self._http.close()

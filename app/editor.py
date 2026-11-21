@@ -90,6 +90,7 @@ def open_streams(keitaro, store, campaign_id):
             'unavailable_offers': {str(b['offer_id']): 'Оффер недоступен в каталоге; возврат запрещён'
                                    for b in (draft['removed'] if draft else []) if b['offer_id'] not in catalogue},
             'editable': editable, 'draft': draft,
+            'publication': store.publication(campaign_id, stream['id']) if draft else None,
             'read_only_reason': (None if editable else 'Поток удалён из Keitaro. Черновик сохранён; публикация запрещена'
                                  if stream.get('deleted') else 'Этот тип или схема потока доступны только для просмотра; публикация запрещена'),
             'conflict': draft is not None and not same_bindings(draft['base'], offers),

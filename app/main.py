@@ -15,6 +15,7 @@ from app.creator import Creator, CreationInput, PreviewInput, final_name, previe
 from app.editor import open_streams
 from app.keitaro import HttpKeitaro, validate_base_url
 from app.storage import DraftStore
+from app.publication import Publisher
 
 
 class DraftAction(BaseModel):
@@ -23,6 +24,11 @@ class DraftAction(BaseModel):
     action: Literal['share', 'pin', 'unpin', 'add', 'remove', 'bring_back']
     offer_id: StrictInt
     share: StrictInt | None = None
+
+
+class PublishDraft(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    version: StrictInt
 
 
 class CancelDraft(BaseModel):
@@ -38,6 +44,7 @@ def create_app(keitaro=None, *, database_url=None, keitaro_url=None, frontend_di
         keitaro = HttpKeitaro(base_url, os.getenv('KEITARO_API_KEY', ''))
     store = DraftStore(database_url or os.getenv('DATABASE_URL', 'sqlite:///./adrobot.db'))
     creator = Creator(keitaro, store)
+    publisher = Publisher(keitaro, store)
     origin = os.getenv('APP_ORIGIN', 'http://127.0.0.1:8000').rstrip('/')
 
     @asynccontextmanager
@@ -183,6 +190,15 @@ def create_app(keitaro=None, *, database_url=None, keitaro_url=None, frontend_di
             stream['keitaro_url'] = f'{base_url}/admin/#!/campaigns/{campaign_id}'
         return result
 
+    @app.get('/api/campaigns/{campaign_id}/drafts')
+    def saved_drafts(campaign_id: int):
+        # Local recovery remains visible even when every upstream read fails.
+        return [dict(id=stream_id, name='', type='', schema='', offers=[], offer_names={},
+                     unavailable_offers={}, editable=False, draft=draft, conflict=False,
+                     validation_errors=[], publication=store.publication(campaign_id, stream_id),
+                     read_only_reason='Актуальное состояние Keitaro недоступно. Показан сохранённый черновик')
+                for stream_id, draft in store.existing(campaign_id).items()]
+
     @app.post('/api/campaigns/{campaign_id}/streams/{stream_id}/actions')
     def edit(campaign_id: int, stream_id: int, body: DraftAction):
         try:
@@ -218,6 +234,26 @@ def create_app(keitaro=None, *, database_url=None, keitaro_url=None, frontend_di
             raise HTTPException(status_code=404, detail=str(error)) from None
         except RuntimeError as error:
             raise HTTPException(status_code=409, detail=str(error)) from None
+
+    def publication_action(campaign_id, stream_id, body, check=False):
+        try:
+            return publisher.run(campaign_id, stream_id, body.version, check=check)
+        except LookupError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from None
+        except RuntimeError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from None
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from None
+        except ConnectionError:
+            raise HTTPException(status_code=502, detail='Не удалось проверить Keitaro перед публикацией. Запись не отправлена.') from None
+
+    @app.post('/api/campaigns/{campaign_id}/streams/{stream_id}/push')
+    def push(campaign_id: int, stream_id: int, body: PublishDraft):
+        return publication_action(campaign_id, stream_id, body)
+
+    @app.post('/api/campaigns/{campaign_id}/streams/{stream_id}/check-publication')
+    def check_publication(campaign_id: int, stream_id: int, body: PublishDraft):
+        return publication_action(campaign_id, stream_id, body, check=True)
 
     build = Path(frontend_dir or os.getenv('FRONTEND_DIR', 'frontend/dist'))
     if (build / 'assets').is_dir():

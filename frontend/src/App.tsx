@@ -4,12 +4,13 @@ import { Creator } from './Creator';
 
 type Campaign = { id: number; name: string; keitaro_url: string };
 type Binding = { offer_id: number; share: unknown; state: string; pinned?: boolean; name?: string };
+type Publication = { id: string; status: 'unknown' | 'succeeded' | 'not_applied' | 'conflict'; locked: boolean; completed: boolean; base: Binding[]; sent: Binding[] };
 type Stream = {
   id: number; name: string; type: string; schema: string; editable: boolean;
   offers: Binding[]; offer_names: Record<string, string>; read_only_reason: string | null;
   draft: { version: number; base: Binding[]; bindings: Binding[]; removed: Binding[]; notices: string[] } | null;
   unavailable_offers: Record<string, string>;
-  conflict: boolean; validation_errors: string[];
+  conflict: boolean; validation_errors: string[]; publication: Publication | null;
 };
 
 async function read<T>(path: string, signal: AbortSignal): Promise<T> {
@@ -91,13 +92,15 @@ function OfferSearch({ draft, disabled, onEdit }: { draft: NonNullable<Stream['d
   </div>;
 }
 
-function StreamPanel({ stream, campaignId, onRefresh, disabled }: { stream: Stream; campaignId: number; onRefresh: () => void; disabled: boolean }) {
+function StreamPanel({ stream: loaded, campaignId, onRefresh, disabled }: { stream: Stream; campaignId: number; onRefresh: () => void; disabled: boolean }) {
+  const [stream, setStream] = useState(loaded);
+  useEffect(() => setStream(previous => (loaded.draft?.version ?? 0) >= (previous.draft?.version ?? 0) ? loaded : previous), [loaded]);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
   const inFlight = useRef(false);
   async function edit(action: 'share' | 'pin' | 'unpin' | 'add' | 'remove' | 'bring_back', offerId: number, share?: number) {
-    if (!stream.draft || !stream.editable || disabled || inFlight.current) return;
+    if (!stream.draft || !stream.editable || stream.publication?.locked || disabled || inFlight.current) return;
     inFlight.current = true;
     setBusy(true); setError(''); setMessage('');
     try {
@@ -113,7 +116,7 @@ function StreamPanel({ stream, campaignId, onRefresh, disabled }: { stream: Stre
     finally { setBusy(false); inFlight.current = false; }
   }
   async function cancelDraft() {
-    if (!stream.draft || !stream.editable || disabled || inFlight.current) return;
+    if (!stream.draft || !stream.editable || stream.publication?.locked || disabled || inFlight.current) return;
     if (!window.confirm('Отбросить неопубликованные изменения этого потока и загрузить актуальное состояние Keitaro? Изменения долей, Remove/Bring Back и неподтверждённые Pin будут отменены. Keitaro не изменится.')) return;
     inFlight.current = true;
     setBusy(true); setError(''); setMessage('');
@@ -129,7 +132,27 @@ function StreamPanel({ stream, campaignId, onRefresh, disabled }: { stream: Stre
     } catch (failure) { setError(failure instanceof Error ? failure.message : 'Не удалось прочитать Keitaro. Перечитайте потоки: результат отмены не подтверждён.'); }
     finally { setBusy(false); inFlight.current = false; }
   }
-  const blocked = busy || disabled || !stream.editable;
+  async function publication(check: boolean) {
+    if (!stream.draft || inFlight.current) return;
+    if (!check && (disabled || !stream.editable || stream.publication?.locked)) return;
+    if (!check && !window.confirm('Опубликовать только привязки офферов этого потока в Keitaro? Cancel не отменяет публикацию. Полная защита от параллельных внешних изменений не гарантируется.')) return;
+    inFlight.current = true;
+    setBusy(true); setError(''); setMessage('');
+    try {
+      const response = await fetch(`/api/campaigns/${campaignId}/streams/${stream.id}/${check ? 'check-publication' : 'push'}`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Adrobot-Request': '1' },
+        body: JSON.stringify({ version: stream.draft.version }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : 'Перечитайте потоки перед следующим действием.');
+      setStream(previous => ({ ...previous, draft: data.draft, publication: data.publication }));
+    } catch (failure) {
+      setError(failure instanceof TypeError || !(failure instanceof Error) ? 'Ответ приложения потерян. Результат публикации не установлен. Перечитайте сохранённую операцию; не повторяйте Push вслепую.' : failure.message);
+    } finally {
+      setBusy(false); inFlight.current = false; onRefresh();
+    }
+  }
+  const blocked = busy || disabled || !stream.editable || Boolean(stream.publication?.locked);
   const type = stream.type === 'regular' ? 'Обычный (Regular)' : stream.type === 'default' ? 'По умолчанию (Default)' : stream.type;
   return <section className="stream" aria-labelledby={`stream-${stream.id}`}>
     <div className="stream-heading">
@@ -138,13 +161,18 @@ function StreamPanel({ stream, campaignId, onRefresh, disabled }: { stream: Stre
     </div>
     {stream.draft ? <>
       <p className="draft-note">Черновик сохранён · Версия {stream.draft.version}</p>
+      <div className="draft-note"><button disabled={blocked || stream.conflict || stream.validation_errors.length > 0} onClick={() => publication(false)}>Опубликовать поток (Push)</button><p>Перечитываем поток и каталог, отправляем только offers и подтверждаем результат чтением.</p></div>
+      {stream.publication && <div className={`notice ${stream.publication.status === 'succeeded' ? '' : 'warning'}`} role="status">
+        <strong>{stream.publication.status === 'succeeded' ? 'Публикация подтверждена чтением Keitaro.' : stream.publication.status === 'not_applied' ? 'Публикация не применена: подтверждено прежнее состояние, предыдущий запрос завершён.' : stream.publication.status === 'conflict' ? 'Конфликт: Keitaro не совпадает ни с базой, ни с отправленным состоянием.' : 'Результат публикации не установлен.'}</strong>
+        {stream.publication.locked ? <><p>Изменения, Cancel и новый Push заблокированы. Проверка только читает Keitaro; перезапуск не повторяет запись.</p><button disabled={busy} onClick={() => publication(true)}>Проверить результат</button>{!stream.publication.completed && <p>Предыдущая запись ещё может выполняться. Таймаут и одно чтение прежней базы не доказывают завершение; автоматической разблокировки нет.</p>}</> : stream.publication.status === 'not_applied' ? <p>Черновик сохранён. Возможен только явный новый Push с обычными проверками.</p> : stream.publication.status === 'conflict' ? <p>Отбросьте черновик и загрузите актуальное. Принудительной перезаписи нет.</p> : <p>Pin и история Removed подтверждены. Cancel не отменяет опубликованное.</p>}
+      </div>}
       {!stream.editable && <p className="readonly-note" role="status">{stream.read_only_reason}. Локальные изменения сохранены; действия заблокированы.</p>}
       <div className="draft-note"><button disabled={blocked} onClick={cancelDraft}>{stream.conflict ? 'Отбросить черновик и загрузить актуальное' : 'Отменить изменения (Cancel)'}</button><p>Потребуется подтверждение. Сначала читаем Keitaro; при ошибке чтения черновик сохраняется.</p></div>
       {stream.draft.notices.length > 0 && <div className="notice warning" role="status"><ul>{stream.draft.notices.map(notice => <li key={notice}>{notice}</li>)}</ul></div>}
-      {stream.conflict && <div className="notice warning" role="status"><strong>Keitaro изменился относительно базы.</strong><p>Черновик и его база сохранены без изменений. Публикация заблокирована до разрешения конфликта.</p></div>}
+      {stream.conflict && !stream.publication?.locked && <div className="notice warning" role="status"><strong>Keitaro изменился относительно базы.</strong><p>Черновик и его база сохранены без изменений. Публикация заблокирована до разрешения конфликта.</p></div>}
       {stream.validation_errors.length > 0 && <div className="notice warning"><strong>Доли требуют исправления перед публикацией</strong><ul>{stream.validation_errors.map(error => <li key={error}>{error}</li>)}</ul><p>Исходные значения показаны без округления и перераспределения.</p></div>}
       <p className="draft-note">Целые проценты 0–100. «Применить» закрепляет долю и распределяет остаток; Unpin пересчитывает. Pin сохраняет текущую долю.</p>
-      {busy && <p className="draft-note" role="status">Сохранение черновика…</p>}
+      {busy && <p className="draft-note" role="status">Выполняется действие… Ожидайте подтверждения.</p>}
       {message && <p className="draft-note" role="status">{message}</p>}
       {error && <div className="notice error" role="alert">{error} <button onClick={onRefresh}>Перечитать потоки</button></div>}
       <Bindings bindings={stream.draft.bindings} names={stream.offer_names} label={`Черновик потока ${stream.id}`} showPins onEdit={stream.editable ? edit : undefined} busy={blocked} />
@@ -196,7 +224,15 @@ export function App() {
           restored.current = true;
         }
       })
-      .catch((error: Error) => { if (!controller.signal.aborted) setCampaignError(error.message); })
+      .catch((error: Error) => {
+        if (controller.signal.aborted) return;
+        setCampaignError(error.message);
+        if (!restored.current) {
+          const id = Number(new URLSearchParams(window.location.search).get('campaign'));
+          if (Number.isSafeInteger(id) && id > 0) setSelected({ id, name: `Кампания ${id} — сохранённые данные`, keitaro_url: '' });
+          restored.current = true;
+        }
+      })
       .finally(() => { if (!controller.signal.aborted) setCampaignLoading(false); });
     return () => controller.abort();
   }, [query, searchAttempt]);
@@ -216,7 +252,14 @@ export function App() {
         setStreams(data);
         setSyncedAt(new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' }));
       })
-      .catch((error: Error) => { if (!controller.signal.aborted) setStreamError(error.message); })
+      .catch(async (error: Error) => {
+        if (controller.signal.aborted) return;
+        setStreamError(error.message);
+        try {
+          const saved = await read<Stream[]>(`/api/campaigns/${selected.id}/drafts`, controller.signal);
+          if (!controller.signal.aborted && saved.length) setStreams(saved);
+        } catch { /* Keep the last loaded state if local recovery is also unavailable. */ }
+      })
       .finally(() => { if (!controller.signal.aborted) setStreamLoading(false); });
     return () => controller.abort();
   }, [selected?.id, refresh]);
@@ -254,8 +297,8 @@ export function App() {
       </aside>
       <main id="workspace" className="workspace" tabIndex={-1}>
         {creatorOpen ? <Creator /> : !selected ? <div className="start-state"><h2>Выберите кампанию</h2><p>Найдите её по названию или точному ID, чтобы открыть потоки и привязки офферов.</p><p>При первом открытии поддерживаемого потока исходные доли сохраняются в локальный черновик. Повторное чтение его не заменяет.</p></div> : <>
-          <div className="workspace-heading"><div><h2>{selected.name || 'Без названия'}</h2><p className="campaign-meta">Кампания ID {selected.id}{syncedAt && ` · Прочитано в ${syncedAt}`}</p></div><div className="workspace-actions"><a href={selected.keitaro_url} target="_blank" rel="noopener noreferrer">Открыть Keitaro <span className="sr-only">(в новой вкладке)</span></a><button onClick={() => setRefresh(n => n + 1)} disabled={streamLoading}>Обновить потоки</button></div></div>
-          <p className="scope-note">Доли и закрепления сохраняются в локальном черновике. Этот экран не изменяет Keitaro; публикация пока недоступна.</p>
+          <div className="workspace-heading"><div><h2>{selected.name || 'Без названия'}</h2><p className="campaign-meta">Кампания ID {selected.id}{syncedAt && ` · Прочитано в ${syncedAt}`}</p></div><div className="workspace-actions">{selected.keitaro_url && <a href={selected.keitaro_url} target="_blank" rel="noopener noreferrer">Открыть Keitaro <span className="sr-only">(в новой вкладке)</span></a>}<button onClick={() => setRefresh(n => n + 1)} disabled={streamLoading}>Обновить потоки</button></div></div>
+          <p className="scope-note">Правки сохраняются в локальном черновике. Только «Опубликовать поток (Push)» записывает привязки выбранного потока в Keitaro. Проверка результата — только чтение. Параллельные внешние изменения полностью не защищены.</p>
           <div aria-busy={streamLoading}>
             {streamLoading && <p role="status" className="loading">Загрузка потоков… Черновики и база сохраняются.</p>}
             {streamError && <div className="notice error" role="alert"><strong>Не удалось загрузить потоки</strong><p>{streamError}</p>{streams !== null && <p>Ниже показаны последние загруженные данные, они могут быть устаревшими.</p>}<button onClick={() => setRefresh(n => n + 1)}>Повторить загрузку</button></div>}

@@ -7,6 +7,8 @@ mode = 'initial'
 created_campaigns = []
 created_streams = []
 writes = []
+publication_payloads = []
+published_offers = None
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -48,9 +50,27 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({}, 404)
         self.send_json({})
 
+    def do_PUT(self):
+        global published_offers, mode
+        if self.headers.get('Api-Key') != 'fixture-only-secret':
+            return self.send_json({}, 401)
+        payload = json.loads(self.rfile.read(int(self.headers.get('Content-Length', '0'))))
+        if self.path != '/admin_api/v1/streams/7' or set(payload) != {'offers'}:
+            return self.send_json({'error': 'only offers allowed'}, 400)
+        publication_payloads.append(payload)
+        published_offers = payload['offers']
+        if mode == 'lose-push':
+            mode = 'initial'
+            self.close_connection = True
+            return
+        if mode == 'push-read-failure':
+            mode = 'failure'
+        self.send_json({})
+
     def do_GET(self):
         if self.path == '/control':
-            return self.send_json({'campaigns': created_campaigns, 'streams': created_streams, 'writes': writes})
+            return self.send_json({'campaigns': created_campaigns, 'streams': created_streams, 'writes': writes,
+                                   'publication_payloads': publication_payloads, 'published_offers': published_offers})
         if self.headers.get('Api-Key') != 'fixture-only-secret':
             return self.send_json({'error': 'missing or wrong API key'}, 401)
         if mode == 'failure':
@@ -88,6 +108,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json([{'id': 9, 'name': 'Оффер А'}, {'id': 10, 'name': 'Оффер Б'}, {'id': 11, 'name': 'Оффер В'}])
         if self.path == '/admin_api/v1/campaigns/12/streams':
             offers = [{'offer_id': 9, 'share': 70, 'state': 'active'}, {'offer_id': 10, 'share': 30, 'state': 'active'}]
+            if published_offers is not None:
+                offers = published_offers
             if mode == 'changed':
                 offers = [{'offer_id': 9, 'share': 100, 'state': 'active'}]
             return self.send_json([
