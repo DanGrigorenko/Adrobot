@@ -8,6 +8,7 @@ from sqlalchemy import JSON, Integer, String, create_engine, select
 from uuid import uuid4
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
+from sqlalchemy.orm.attributes import flag_modified
 
 
 class Base(DeclarativeBase):
@@ -111,6 +112,8 @@ class DraftStore:
             return {'version': draft.version, 'base': draft.base, 'bindings': draft.bindings, 'removed': draft.removed, 'notices': draft.notices}
 
     def cancel(self, campaign_id, stream_id, version, offers):
+        from app.editor import same_bindings
+
         with Session(self.engine) as session, session.begin():
             session.connection().exec_driver_sql('BEGIN IMMEDIATE')
             draft = session.scalar(select(Draft).where(
@@ -121,7 +124,8 @@ class DraftStore:
                 raise RuntimeError('Черновик изменён в другой вкладке. Перечитайте потоки.')
             previous = {b['offer_id']: b for b in draft.base}
             latest = {b['offer_id']: b for b in offers}
-            changed = {offer_id for offer_id, binding in previous.items() if latest.get(offer_id) != binding}
+            changed = {offer_id for offer_id, binding in previous.items()
+                       if offer_id not in latest or not same_bindings([binding], [latest[offer_id]])}
             pinned = set(draft.confirmed_pins)
             visible_pins = pinned | {b['offer_id'] for b in draft.bindings + draft.removed if b['pinned']}
             draft.notices = [f'Pin оффера {offer_id} снят: доля или статус изменились в Keitaro либо привязка исчезла.'
@@ -130,6 +134,9 @@ class DraftStore:
             draft.confirmed_pins = sorted(pinned & latest.keys())
             draft.base = deepcopy(offers)
             draft.bindings = [dict(binding, pinned=binding['offer_id'] in pinned) for binding in offers]
+            # SQLAlchemy's JSON equality otherwise treats True and 1 as unchanged.
+            flag_modified(draft, 'base')
+            flag_modified(draft, 'bindings')
             # Remote bindings win over confirmed Removed. External removals are not added.
             draft.confirmed_removed = [b for b in draft.confirmed_removed if b['offer_id'] not in latest]
             draft.removed = deepcopy(draft.confirmed_removed)

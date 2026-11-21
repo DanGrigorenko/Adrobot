@@ -49,7 +49,10 @@ def redistribute(result):
 
 
 def same_bindings(left, right):
-    return sorted(left, key=lambda b: b['offer_id']) == sorted(right, key=lambda b: b['offer_id'])
+    left = sorted(left, key=lambda b: b['offer_id'])
+    right = sorted(right, key=lambda b: b['offer_id'])
+    # Invalid source values remain distinct: JSON true is not an integer 1%.
+    return left == right and all(type(a['share']) is type(b['share']) for a, b in zip(left, right))
 
 
 def validation_errors(bindings):

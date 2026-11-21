@@ -172,6 +172,27 @@ def test_fetch_preserves_conflicting_pins_and_cancel_reports_external_pin_loss(t
         assert current(client)['draft'] == accepted
 
 
+def test_fetch_and_cancel_distinguish_invalid_boolean_share_from_integer(tmp_path):
+    remote = Keitaro()
+    remote.bindings[0]['share'] = 1
+    remote.bindings[1]['share'] = 99
+    with TestClient(create_app(remote, database_url=f"sqlite:///{tmp_path / 'drafts.db'}")) as client:
+        current(client)
+        saved = action(client, 1).json()
+        # JSON true is invalid, not the integer 1%, despite Python's True == 1.
+        remote.bindings[0]['share'] = True
+        fetched = current(client)
+        assert fetched['conflict'] is True
+        assert fetched['draft'] == saved
+        accepted = cancel(client, 2)
+        assert accepted.status_code == 200
+        assert accepted.json()['bindings'][0]['share'] is True
+        assert accepted.json()['bindings'][0]['pinned'] is False
+        assert any('Pin' in notice and '1' in notice for notice in accepted.json()['notices'])
+        assert current(client)['validation_errors']
+        assert current(client)['conflict'] is False
+
+
 @pytest.mark.parametrize('change', ['deleted', 'redirect', 'unsupported-type'])
 def test_unavailable_stream_retains_visible_draft_and_blocks_cancel_and_edits(tmp_path, change):
     remote = Keitaro()
