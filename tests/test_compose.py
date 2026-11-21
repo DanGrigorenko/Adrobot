@@ -1,6 +1,7 @@
 """Explicit opt-in packaged HTTP acceptance; never uses a live Keitaro instance."""
 import os
 from pathlib import Path
+import re
 import subprocess
 import time
 
@@ -38,8 +39,26 @@ def test_packaged_ui_real_adapter_and_drafts_survive_container_recreation():
             assert ui.status_code == 200
             assert '<html lang="ru">' in ui.text
             assert '/assets/' in ui.text
-            asset = ui.text.split('src="')[1].split('"')[0]
-            assert client.get(asset).status_code == 200
+            assets = re.findall(r'(?:src|href)="(/assets/[^\"]+)"', ui.text)
+            assert assets
+            for asset in assets:
+                bundle = client.get(asset)
+                assert bundle.status_code == 200
+                assert 'fixture-only-secret' not in bundle.text
+            assert 'fixture-only-secret' not in ui.text
+            assert ui.headers['x-content-type-options'] == 'nosniff'
+            assert "frame-ancestors 'none'" in ui.headers['content-security-policy']
+            assert run('port', 'app', '8000').stdout.strip() == f"127.0.0.1:{os.getenv('TEST_APP_PORT', '18080')}"
+            assert client.get('/api/health', headers={'Host': 'attacker.invalid'}).status_code == 400
+            # Every browser write seam rejects missing/foreign CSRF credentials before validation.
+            for endpoint in ['/api/creator/preview', '/api/creator/operations',
+                             '/api/creator/operations/not-an-operation/continue',
+                             '/api/campaigns/12/streams/7/actions', '/api/campaigns/12/streams/7/cancel',
+                             '/api/campaigns/12/streams/7/push', '/api/campaigns/12/streams/7/check-publication']:
+                for invalid in [{}, {'Origin': app_url},
+                                {'Origin': 'https://attacker.invalid', 'X-Adrobot-Request': '1'},
+                                {'Origin': app_url, 'X-Adrobot-Request': '1', 'Sec-Fetch-Site': 'cross-site'}]:
+                    assert client.post(endpoint, headers=invalid, json={}).status_code == 403
             assert client.get('/api/campaigns', params={'q': 'ЛЕТО'}).json()[0]['id'] == 12
             assert [c['id'] for c in client.get('/api/campaigns', params={'q': '12'}).json()] == [12]
             assert [c['id'] for c in client.get('/api/campaigns', params={'q': '120'}).json()] == [120]
@@ -79,6 +98,33 @@ def test_packaged_ui_real_adapter_and_drafts_survive_container_recreation():
             assert evidence['writes'] == ['campaign', 'regular', 'default', 'enable']
             assert evidence['campaigns'][0]['state'] == 'active'
             assert len(evidence['streams']) == 2
+            # Follow the newly created campaign into Editor, not an unrelated seeded campaign.
+            created_streams = client.get('/api/campaigns/100/streams').json()
+            assert created_streams[0]['editable'] is False
+            default = created_streams[1]
+            assert default['editable'] is True
+            created_path = f"/api/campaigns/100/streams/{default['id']}"
+            created_draft = client.post(created_path + '/actions', headers=headers, json={
+                'version': default['draft']['version'], 'action': 'add', 'offer_id': 11}).json()
+            assert [b['share'] for b in created_draft['bindings']] == [50, 50]
+            created_draft = client.post(created_path + '/actions', headers=headers, json={
+                'version': created_draft['version'], 'action': 'remove', 'offer_id': 9}).json()
+            published = client.post(created_path + '/push', headers=headers, json={
+                'version': created_draft['version']}).json()
+            assert published['publication']['status'] == 'succeeded'
+            run('up', '-d', '--force-recreate', 'app')
+            wait_ready()
+            reopened_created = client.get('/api/campaigns/100/streams').json()
+            assert reopened_created[1]['draft'] == published['draft']
+            assert reopened_created[1]['draft']['removed'] == [dict(offer_id=9, share=50, state='active', pinned=False)]
+            assert reopened_created[0]['offers'] == []
+            confirmed = client.post(created_path + '/cancel', headers=headers, json={
+                'version': published['draft']['version'], 'confirmed': True}).json()
+            assert confirmed['removed'] == published['draft']['removed']
+            evidence_after = httpx.get(f'{fixture_url}/control').json()
+            assert evidence_after['streams'][0] == evidence['streams'][0]
+            assert {k: v for k, v in evidence_after['streams'][1].items() if k != 'offers'} == {
+                k: v for k, v in evidence['streams'][1].items() if k != 'offers'}
             httpx.post(f'{fixture_url}/control', json={'mode': 'initial'}).raise_for_status()
             streams = client.get('/api/campaigns/12/streams').json()
             assert streams[0]['offers'][0]['name'] == 'Оффер А'
@@ -189,6 +235,11 @@ def test_packaged_ui_real_adapter_and_drafts_survive_container_recreation():
             assert client.get('/api/campaigns/120/streams').json() == []
             assert client.post('/api/campaigns', headers={'Origin': 'https://attacker.invalid'}).status_code == 403
             assert client.get('/api/not-found').status_code == 404
+            assert client.get('/api/creator/operations').headers['cache-control'] == 'no-store'
+            httpx.post(f'{fixture_url}/control', json={'mode': 'long-names'}).raise_for_status()
+            assert client.get('/api/offers', params={'q': '11'}).json() == [
+                {'id': 11, 'name': 'Длинноеназваниеоффера' * 12}]
+        assert 'fixture-only-secret' not in run('logs', '--no-color', 'app').stdout
         # A startup migration error must fail closed, not serve a partially initialized API.
         failure = run('run', '--rm', '-e', 'DATABASE_URL=sqlite:////proc/not-writable/db.sqlite', 'app', check=False)
         assert failure.returncode != 0
