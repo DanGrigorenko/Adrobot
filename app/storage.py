@@ -22,6 +22,10 @@ class Draft(Base):
     base: Mapped[list] = mapped_column(JSON, nullable=False)
     bindings: Mapped[list] = mapped_column(JSON, nullable=False)
     removed: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    # Push confirms these separately; editing never changes them.
+    confirmed_pins: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    confirmed_removed: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    notices: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
 
 
 class DraftStore:
@@ -44,7 +48,12 @@ class DraftStore:
                 base=deepcopy(offers), bindings=bindings,
             ).on_conflict_do_nothing(index_elements=['stream_id']))
             draft = session.scalar(select(Draft).where(Draft.stream_id == stream_id))
-            return {'version': draft.version, 'base': draft.base, 'bindings': draft.bindings, 'removed': draft.removed}
+            return {'version': draft.version, 'base': draft.base, 'bindings': draft.bindings, 'removed': draft.removed, 'notices': draft.notices}
+
+    def existing(self, campaign_id):
+        with Session(self.engine) as session:
+            return {d.stream_id: {'version': d.version, 'base': d.base, 'bindings': d.bindings, 'removed': d.removed, 'notices': d.notices}
+                    for d in session.scalars(select(Draft).where(Draft.campaign_id == campaign_id))}
 
     def edit(self, campaign_id, stream_id, version, action, offer_id, share, catalogue=None):
         from app.editor import edit_binding, redistribute
@@ -86,7 +95,33 @@ class DraftStore:
             else:
                 draft.bindings = edit_binding(draft.bindings, offer_id, action, share)
             draft.version += 1
-            return {'version': draft.version, 'base': draft.base, 'bindings': draft.bindings, 'removed': draft.removed}
+            return {'version': draft.version, 'base': draft.base, 'bindings': draft.bindings, 'removed': draft.removed, 'notices': draft.notices}
+
+    def cancel(self, campaign_id, stream_id, version, offers):
+        with Session(self.engine) as session, session.begin():
+            session.connection().exec_driver_sql('BEGIN IMMEDIATE')
+            draft = session.scalar(select(Draft).where(
+                Draft.stream_id == stream_id, Draft.campaign_id == campaign_id))
+            if draft is None:
+                raise LookupError('Сначала загрузите черновик потока')
+            if draft.version != version:
+                raise RuntimeError('Черновик изменён в другой вкладке. Перечитайте потоки.')
+            previous = {b['offer_id']: b for b in draft.base}
+            latest = {b['offer_id']: b for b in offers}
+            changed = {offer_id for offer_id, binding in previous.items() if latest.get(offer_id) != binding}
+            pinned = set(draft.confirmed_pins)
+            visible_pins = pinned | {b['offer_id'] for b in draft.bindings + draft.removed if b['pinned']}
+            draft.notices = [f'Pin оффера {offer_id} снят: доля или статус изменились в Keitaro либо привязка исчезла.'
+                             for offer_id in sorted(changed & visible_pins)]
+            pinned -= changed
+            draft.confirmed_pins = sorted(pinned & latest.keys())
+            draft.base = deepcopy(offers)
+            draft.bindings = [dict(binding, pinned=binding['offer_id'] in pinned) for binding in offers]
+            # Remote bindings win over confirmed Removed. External removals are not added.
+            draft.confirmed_removed = [b for b in draft.confirmed_removed if b['offer_id'] not in latest]
+            draft.removed = deepcopy(draft.confirmed_removed)
+            draft.version += 1
+            return {'version': draft.version, 'base': draft.base, 'bindings': draft.bindings, 'removed': draft.removed, 'notices': draft.notices}
 
     def close(self):
         self.engine.dispose()

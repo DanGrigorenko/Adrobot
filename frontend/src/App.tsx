@@ -7,7 +7,7 @@ type Binding = { offer_id: number; share: unknown; state: string; pinned?: boole
 type Stream = {
   id: number; name: string; type: string; schema: string; editable: boolean;
   offers: Binding[]; offer_names: Record<string, string>; read_only_reason: string | null;
-  draft: { version: number; base: Binding[]; bindings: Binding[]; removed: Binding[] } | null;
+  draft: { version: number; base: Binding[]; bindings: Binding[]; removed: Binding[]; notices: string[] } | null;
   unavailable_offers: Record<string, string>;
   conflict: boolean; validation_errors: string[];
 };
@@ -97,7 +97,7 @@ function StreamPanel({ stream, campaignId, onRefresh, disabled }: { stream: Stre
   const [error, setError] = useState('');
   const inFlight = useRef(false);
   async function edit(action: 'share' | 'pin' | 'unpin' | 'add' | 'remove' | 'bring_back', offerId: number, share?: number) {
-    if (!stream.draft || inFlight.current) return;
+    if (!stream.draft || !stream.editable || disabled || inFlight.current) return;
     inFlight.current = true;
     setBusy(true); setError(''); setMessage('');
     try {
@@ -112,6 +112,24 @@ function StreamPanel({ stream, campaignId, onRefresh, disabled }: { stream: Stre
     } catch (failure) { setError(failure instanceof Error ? failure.message : 'Не удалось сохранить. Обновите потоки перед повтором.'); }
     finally { setBusy(false); inFlight.current = false; }
   }
+  async function cancelDraft() {
+    if (!stream.draft || !stream.editable || disabled || inFlight.current) return;
+    if (!window.confirm('Отбросить неопубликованные изменения этого потока и загрузить актуальное состояние Keitaro? Изменения долей, Remove/Bring Back и неподтверждённые Pin будут отменены. Keitaro не изменится.')) return;
+    inFlight.current = true;
+    setBusy(true); setError(''); setMessage('');
+    try {
+      const response = await fetch(`/api/campaigns/${campaignId}/streams/${stream.id}/cancel`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Adrobot-Request': '1' },
+        body: JSON.stringify({ version: stream.draft.version, confirmed: true }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : 'Не удалось отменить изменения. Перечитайте потоки.');
+      setMessage('Неопубликованные изменения отброшены. Загружено актуальное состояние; Keitaro не изменён.');
+      onRefresh();
+    } catch (failure) { setError(failure instanceof Error ? failure.message : 'Не удалось прочитать Keitaro. Перечитайте потоки: результат отмены не подтверждён.'); }
+    finally { setBusy(false); inFlight.current = false; }
+  }
+  const blocked = busy || disabled || !stream.editable;
   const type = stream.type === 'regular' ? 'Обычный (Regular)' : stream.type === 'default' ? 'По умолчанию (Default)' : stream.type;
   return <section className="stream" aria-labelledby={`stream-${stream.id}`}>
     <div className="stream-heading">
@@ -120,21 +138,24 @@ function StreamPanel({ stream, campaignId, onRefresh, disabled }: { stream: Stre
     </div>
     {stream.draft ? <>
       <p className="draft-note">Черновик сохранён · Версия {stream.draft.version}</p>
+      {!stream.editable && <p className="readonly-note" role="status">{stream.read_only_reason}. Локальные изменения сохранены; действия заблокированы.</p>}
+      <div className="draft-note"><button disabled={blocked} onClick={cancelDraft}>{stream.conflict ? 'Отбросить черновик и загрузить актуальное' : 'Отменить изменения (Cancel)'}</button><p>Потребуется подтверждение. Сначала читаем Keitaro; при ошибке чтения черновик сохраняется.</p></div>
+      {stream.draft.notices.length > 0 && <div className="notice warning" role="status"><ul>{stream.draft.notices.map(notice => <li key={notice}>{notice}</li>)}</ul></div>}
       {stream.conflict && <div className="notice warning" role="status"><strong>Keitaro изменился относительно базы.</strong><p>Черновик и его база сохранены без изменений. Публикация заблокирована до разрешения конфликта.</p></div>}
       {stream.validation_errors.length > 0 && <div className="notice warning"><strong>Доли требуют исправления перед публикацией</strong><ul>{stream.validation_errors.map(error => <li key={error}>{error}</li>)}</ul><p>Исходные значения показаны без округления и перераспределения.</p></div>}
       <p className="draft-note">Целые проценты 0–100. «Применить» закрепляет долю и распределяет остаток; Unpin пересчитывает. Pin сохраняет текущую долю.</p>
       {busy && <p className="draft-note" role="status">Сохранение черновика…</p>}
       {message && <p className="draft-note" role="status">{message}</p>}
       {error && <div className="notice error" role="alert">{error} <button onClick={onRefresh}>Перечитать потоки</button></div>}
-      <Bindings bindings={stream.draft.bindings} names={stream.offer_names} label={`Черновик потока ${stream.id}`} showPins onEdit={edit} busy={busy || disabled} />
-      <OfferSearch draft={stream.draft} disabled={busy || disabled} onEdit={edit} />
+      <Bindings bindings={stream.draft.bindings} names={stream.offer_names} label={`Черновик потока ${stream.id}`} showPins onEdit={stream.editable ? edit : undefined} busy={blocked} />
+      {stream.editable && <OfferSearch draft={stream.draft} disabled={blocked} onEdit={edit} />}
       <details className="comparison removed-history">
         <summary>Удалённые (Removed) · {stream.draft.removed.length}</summary>
         <p className="history-note">Прежние доля, статус и Pin сохранены. Раскрытие и скрытие не изменяют черновик.</p>
         {stream.draft.removed.length ? <ul className="offer-results">{stream.draft.removed.map(binding => <li key={binding.offer_id}>
           <div><strong>{stream.offer_names[String(binding.offer_id)]}</strong><span className="entity-id">ID {binding.offer_id}</span><p>{displayShare(binding.share)} · {binding.state === 'disabled' ? 'Отключена (disabled)' : 'Активна'} · {binding.pinned ? 'Закреплена (Pin)' : 'Не закреплена'}</p>
             {stream.unavailable_offers[String(binding.offer_id)] && <p>{stream.unavailable_offers[String(binding.offer_id)]}</p>}</div>
-          <button disabled={busy || disabled || Boolean(stream.unavailable_offers[String(binding.offer_id)])} onClick={() => edit('bring_back', binding.offer_id)} aria-label={`Вернуть оффер ${binding.offer_id}`}>Вернуть (Bring Back)</button>
+          <button disabled={blocked || Boolean(stream.unavailable_offers[String(binding.offer_id)])} onClick={() => edit('bring_back', binding.offer_id)} aria-label={`Вернуть оффер ${binding.offer_id}`}>Вернуть (Bring Back)</button>
         </li>)}</ul> : <p className="history-note">Удалённых привязок пока нет.</p>}
       </details>
       {stream.conflict && <details className="comparison"><summary>Сравнить базу и текущее состояние Keitaro</summary><h4>База черновика</h4><Bindings bindings={stream.draft.base} names={stream.offer_names} label={`База потока ${stream.id}`} showPins={false} /><h4>Сейчас в Keitaro</h4><Bindings bindings={stream.offers} names={stream.offer_names} label={`Текущее состояние потока ${stream.id}`} showPins={false} /></details>}

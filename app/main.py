@@ -8,7 +8,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.exceptions import RequestValidationError
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, ConfigDict, StrictInt
+from pydantic import BaseModel, ConfigDict, StrictBool, StrictInt
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from app.creator import PreviewInput, final_name, preview, settings
@@ -23,6 +23,12 @@ class DraftAction(BaseModel):
     action: Literal['share', 'pin', 'unpin', 'add', 'remove', 'bring_back']
     offer_id: StrictInt
     share: StrictInt | None = None
+
+
+class CancelDraft(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    version: StrictInt
+    confirmed: StrictBool
 
 
 def create_app(keitaro=None, *, database_url=None, keitaro_url=None, frontend_dir=None):
@@ -157,6 +163,25 @@ def create_app(keitaro=None, *, database_url=None, keitaro_url=None, frontend_di
             raise HTTPException(status_code=409, detail=str(error)) from None
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error)) from None
+
+    @app.post('/api/campaigns/{campaign_id}/streams/{stream_id}/cancel')
+    def cancel(campaign_id: int, stream_id: int, body: CancelDraft):
+        if not body.confirmed:
+            raise HTTPException(status_code=422, detail='Подтвердите отбрасывание черновика')
+        try:
+            remote = next((s for s in keitaro.streams(campaign_id) if s['id'] == stream_id), None)
+            if remote is None or remote.get('type') not in ('regular', 'default') or remote.get('schema') != 'landings':
+                raise HTTPException(status_code=409, detail='Поток удалён или больше не поддерживает редактирование. Черновик сохранён.')
+            # Complete all reads before acquiring SQLite's writer lock.
+            keitaro.offers()
+            offers = [{k: b[k] for k in ('offer_id', 'share', 'state')} for b in remote.get('offers', [])]
+            return store.cancel(campaign_id, stream_id, body.version, offers)
+        except ConnectionError:
+            raise HTTPException(status_code=502, detail='Не удалось прочитать Keitaro. Черновик, Pin и Removed сохранены.') from None
+        except LookupError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from None
+        except RuntimeError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from None
 
     build = Path(frontend_dir or os.getenv('FRONTEND_DIR', 'frontend/dist'))
     if (build / 'assets').is_dir():
