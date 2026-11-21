@@ -8,6 +8,16 @@ type Preview = {
   default: { offers: { offer_id: number; name: string; share: number; state: string }[] };
 };
 
+type Operation = {
+  id: string; alias: string; status: 'ready' | 'running' | 'unknown' | 'blocked' | 'succeeded';
+  step: string; reason?: string; campaign_id: number | null;
+  inputs: { name: string; geos: string[]; offer_id: number };
+  editor_url?: string; keitaro_url?: string;
+};
+const statuses = { ready: 'Готова к продолжению', running: 'Требуется проверка сохранённого шага', unknown: 'Исход неизвестен', blocked: 'Запись остановлена', succeeded: 'Кампания активна — подтверждено' };
+const steps: Record<string, string> = { campaign: 'Создание кампании', regular: 'Обычный поток', default: 'Поток по умолчанию', enable: 'Включение', done: 'Завершено' };
+const mutationHeaders = { 'Content-Type': 'application/json', 'X-Adrobot-Request': '1' };
+
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const response = await fetch(path, { ...options, headers: { Accept: 'application/json', ...options.headers } });
   const body = await response.json();
@@ -42,6 +52,55 @@ export function Creator() {
   const [previewError, setPreviewError] = useState('');
   const previewRequest = useRef<AbortController | null>(null);
   const heading = useRef<HTMLHeadingElement | null>(null);
+  const [operations, setOperations] = useState<Operation[] | null>(null);
+  const [operationError, setOperationError] = useState('');
+  const [busyOperation, setBusyOperation] = useState<string | null>(null);
+  const confirmationId = useRef<string | null>(null);
+  const creating = useRef(false);
+
+  async function loadOperations() {
+    try {
+      setOperations(await request<Operation[]>('/api/creator/operations'));
+      setOperationError('');
+    } catch { setOperationError('Не удалось прочитать сохранённые операции. Перечитайте список перед созданием.'); }
+  }
+
+  useEffect(() => { void loadOperations(); }, []);
+
+  function remember(operation: Operation) {
+    setOperations(current => [...(current ?? []).filter(item => item.id !== operation.id), operation]);
+  }
+
+  async function continueOperation(id: string) {
+    if (creating.current) return;
+    creating.current = true;
+    setBusyOperation(id); setOperationError('');
+    try {
+      remember(await request<Operation>(`/api/creator/operations/${id}/continue`, { method: 'POST', headers: mutationHeaders }));
+    } catch (error) {
+      setOperationError(error instanceof Error ? error.message : 'Ответ не получен. Перечитайте сохранённую операцию; не создавайте новую.');
+    } finally { creating.current = false; setBusyOperation(null); }
+  }
+
+  async function confirmCreation() {
+    if (!preview || creating.current) return;
+    const id = confirmationId.current ?? crypto.randomUUID();
+    confirmationId.current = id;
+    creating.current = true;
+    setBusyOperation(id); setOperationError('');
+    try {
+      const operation = await request<Operation>('/api/creator/operations', {
+        method: 'POST', headers: mutationHeaders,
+        body: JSON.stringify({ operation_id: id, name: preview.name, geos: preview.geos, offer_id: preview.default.offers[0].offer_id }),
+      });
+      remember(operation);
+      setPreview(null);
+      creating.current = false;
+      await continueOperation(id);
+    } catch {
+      setOperationError('Подтверждение не получено. Перечитайте список операций. Повтор этой кнопки использует тот же идентификатор.');
+    } finally { creating.current = false; setBusyOperation(null); }
+  }
 
   useEffect(() => { heading.current?.focus(); }, []);
 
@@ -86,6 +145,7 @@ export function Creator() {
   function invalidate() {
     previewRequest.current?.abort();
     setPreview(null);
+    confirmationId.current = null;
     setPreviewError('');
     setPreviewLoading(false);
   }
@@ -112,7 +172,25 @@ export function Creator() {
 
   return <section className="creator" aria-labelledby="creator-heading">
     <h2 id="creator-heading" tabIndex={-1} ref={heading}>Новая кампания</h2>
-    <p className="scope-note">Creator проверяет настройки и показывает будущие маршруты. Создание кампании пока недоступно: запросы ничего не записывают в Keitaro.</p>
+    <p className="scope-note">Проверьте резюме и подтвердите создание. Кампания включается только после проверки обоих маршрутов. После сбоя продолжайте сохранённую операцию, а не создавайте новую.</p>
+    <section aria-labelledby="operations-heading" className="creator-summary">
+      <h3 id="operations-heading">Сохранённые операции</h3>
+      <button disabled={!!busyOperation} onClick={() => void loadOperations()}>Перечитать операции</button>
+      {operationError && <p role="alert" className="notice error">{operationError}</p>}
+      {!operations && !operationError && <p role="status">Загрузка операций…</p>}
+      {operations?.length === 0 && <p>Сохранённых операций пока нет.</p>}
+      {operations?.map(operation => <article className="creator-summary" key={operation.id}>
+        <h4 className="summary-name">{operation.inputs.name}</h4>
+        <p className="field-hint">GEO: {operation.inputs.geos.join(', ')} · Оффер ID {operation.inputs.offer_id}</p>
+        <p className="field-hint">Операция {operation.id} · Alias {operation.alias}</p>
+        <p role="status"><strong>{statuses[operation.status]}</strong> · Этап: {steps[operation.step] ?? operation.step}</p>
+        {operation.reason && <p className="notice warning">{operation.reason}</p>}
+        {operation.status === 'succeeded'
+          ? <p className="workspace-actions"><a href={operation.editor_url}>Открыть Editor</a><a href={operation.keitaro_url} target="_blank" rel="noreferrer">Открыть в Keitaro</a></p>
+          : <><p className="field-hint">Продолжение сначала проверяет сохранённый шаг. Неясная предыдущая запись не повторяется. Alias не является гарантией идемпотентности сервера.</p><button disabled={!!busyOperation} onClick={() => void continueOperation(operation.id)}>{busyOperation === operation.id ? 'Проверка и выполнение…' : 'Проверить и продолжить эту операцию'}</button></>}
+      </article>)}
+      {busyOperation && <p role="status">Выполняется операция. Не закрывайте страницу; при потере ответа перечитайте список.</p>}
+    </section>
     <h3>Настройки с сервера</h3>
     {settings ? <Configuration settings={settings} /> : settingsError
       ? <div className="notice error" role="alert"><p>{settingsError}</p><button onClick={() => { invalidate(); setRetry(n => n + 1); }}>Проверить настройки снова</button></div>
@@ -143,12 +221,13 @@ export function Creator() {
       <h3 id="summary-heading">Проверенное резюме</h3>
       <p className="summary-name">{preview.name}</p>
       <Configuration settings={preview.settings} />
-      <p>Начальное состояние: выключена (disabled). Ротация: по позиции (position). Создание, проверка потоков и включение ещё не реализованы.</p>
+      <p>Начальное состояние: выключена (disabled). Ротация: по позиции (position). После проверки двух потоков сервер включает кампанию и подтверждает активность чтением.</p>
       <ol className="route-summary">
         <li><strong>Обычный поток (Regular)</strong><p>Страны {preview.geos.join(', ')} → <span>https://google.com</span></p><p className="field-hint">Один фильтр Country · HTTP-редирект</p></li>
         <li><strong>По умолчанию (Default)</strong><p>Остальные посетители → {preview.default.offers[0].name} · ID {preview.default.offers[0].offer_id} · 100%</p><p className="field-hint">Активная привязка оффера · Распределение офферов</p></li>
       </ol>
-      <p className="summary-result" role="status">Проверка пройдена. Кампания не создана; запись в Keitaro недоступна.</p>
+      <p className="summary-result" role="status">Резюме проверено. Подтверждение создаст кампанию и два потока в Keitaro.</p>
+      <button className="preview-button" disabled={!!busyOperation || !operations || !!operationError} onClick={() => void confirmCreation()}>Подтвердить создание и включение</button>
     </section>}
   </section>;
 }

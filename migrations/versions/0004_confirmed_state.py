@@ -5,8 +5,8 @@ No Push existed before this migration: existing Pins and Removed are unpublished
 from alembic import op
 import sqlalchemy as sa
 
-revision = '0003'
-down_revision = '0002'
+revision = '0004'
+down_revision = '0003'
 branch_labels = None
 depends_on = None
 

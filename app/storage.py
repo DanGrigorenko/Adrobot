@@ -4,7 +4,8 @@ from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import JSON, Integer, create_engine, select
+from sqlalchemy import JSON, Integer, String, create_engine, select
+from uuid import uuid4
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
 
@@ -26,6 +27,18 @@ class Draft(Base):
     confirmed_pins: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     confirmed_removed: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     notices: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+
+
+class Creation(Base):
+    __tablename__ = 'creator_operations'
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    alias: Mapped[str] = mapped_column(String, unique=True, nullable=False)
+    inputs: Mapped[dict] = mapped_column(JSON, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False)
+    step: Mapped[str] = mapped_column(String, nullable=False)
+    campaign_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    state: Mapped[dict] = mapped_column(JSON, nullable=False)
 
 
 class DraftStore:
@@ -122,6 +135,41 @@ class DraftStore:
             draft.removed = deepcopy(draft.confirmed_removed)
             draft.version += 1
             return {'version': draft.version, 'base': draft.base, 'bindings': draft.bindings, 'removed': draft.removed, 'notices': draft.notices}
+
+    def prepare_creation(self, operation_id, inputs):
+        with Session(self.engine) as session, session.begin():
+            session.execute(insert(Creation).values(
+                id=operation_id, alias='adrobot_' + uuid4().hex, inputs=inputs,
+                status='ready', step='campaign', campaign_id=None, state={},
+            ).on_conflict_do_nothing(index_elements=['id']))
+            operation = session.get(Creation, operation_id)
+            if operation.inputs != inputs:
+                raise RuntimeError('Операция уже сохранена с другими входными данными')
+            return self.creation_data(operation)
+
+    @staticmethod
+    def creation_data(operation):
+        return dict(deepcopy(operation.state), id=operation.id, alias=operation.alias,
+                    inputs=deepcopy(operation.inputs), status=operation.status,
+                    step=operation.step, campaign_id=operation.campaign_id)
+
+    def creations(self):
+        with Session(self.engine) as session:
+            return [self.creation_data(op) for op in session.scalars(select(Creation).order_by(Creation.id))]
+
+    def creation(self, operation_id):
+        with Session(self.engine) as session:
+            operation = session.get(Creation, operation_id)
+            if operation is None:
+                raise LookupError('Операция не найдена')
+            return self.creation_data(operation)
+
+    def save_creation(self, operation):
+        with Session(self.engine) as session, session.begin():
+            row = session.get(Creation, operation['id'])
+            row.status, row.step, row.campaign_id = operation['status'], operation['step'], operation['campaign_id']
+            row.state = {k: deepcopy(v) for k, v in operation.items()
+                         if k not in ('id', 'alias', 'inputs', 'status', 'step', 'campaign_id')}
 
     def close(self):
         self.engine.dispose()

@@ -11,7 +11,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, StrictBool, StrictInt
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from app.creator import PreviewInput, final_name, preview, settings
+from app.creator import Creator, CreationInput, PreviewInput, final_name, preview, settings
 from app.editor import open_streams
 from app.keitaro import HttpKeitaro, validate_base_url
 from app.storage import DraftStore
@@ -37,6 +37,7 @@ def create_app(keitaro=None, *, database_url=None, keitaro_url=None, frontend_di
     if owned_client:
         keitaro = HttpKeitaro(base_url, os.getenv('KEITARO_API_KEY', ''))
     store = DraftStore(database_url or os.getenv('DATABASE_URL', 'sqlite:///./adrobot.db'))
+    creator = Creator(keitaro, store)
     origin = os.getenv('APP_ORIGIN', 'http://127.0.0.1:8000').rstrip('/')
 
     @asynccontextmanager
@@ -121,6 +122,41 @@ def create_app(keitaro=None, *, database_url=None, keitaro_url=None, frontend_di
             raise HTTPException(status_code=422, detail=str(error)) from None
         except ConnectionError:
             raise HTTPException(status_code=502, detail='Не удалось проверить настройки или оффер в Keitaro') from None
+
+    def creation_result(operation):
+        result = {k: v for k, v in operation.items() if k != 'plan'}
+        if result['status'] == 'succeeded':
+            result['editor_url'] = f"/?campaign={result['campaign_id']}"
+            result['keitaro_url'] = f"{base_url}/admin/#!/campaigns/{result['campaign_id']}"
+        return result
+
+    @app.post('/api/creator/operations')
+    def prepare_creation(data: CreationInput):
+        try:
+            return creation_result(store.prepare_creation(
+                str(data.operation_id), data.model_dump(exclude={'operation_id'})))
+        except RuntimeError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from None
+
+    @app.get('/api/creator/operations')
+    def creation_operations():
+        return [creation_result(op) for op in store.creations()]
+
+    @app.get('/api/creator/operations/{operation_id}')
+    def creation_operation(operation_id: str):
+        try:
+            return creation_result(store.creation(operation_id))
+        except LookupError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from None
+
+    @app.post('/api/creator/operations/{operation_id}/continue')
+    def continue_creation(operation_id: str):
+        try:
+            return creation_result(creator.continue_operation(operation_id))
+        except LookupError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from None
+        except RuntimeError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from None
 
     @app.get('/api/campaigns')
     def campaigns(q: str = ''):
