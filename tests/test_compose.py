@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_packaged_ui_real_adapter_and_drafts_survive_container_recreation():
-    compose = ['docker', 'compose', '-p', 'adrobot-issue11-test', '-f', 'compose.yml', '-f', 'compose.test.yml']
+    compose = ['docker', 'compose', '-p', 'adrobot-issue14-test', '-f', 'compose.yml', '-f', 'compose.test.yml']
     app_url = f"http://127.0.0.1:{os.getenv('TEST_APP_PORT', '18080')}"
     fixture_url = f"http://127.0.0.1:{os.getenv('TEST_FIXTURE_PORT', '18081')}"
     def run(*args, check=True):
@@ -124,6 +124,20 @@ def test_packaged_ui_real_adapter_and_drafts_survive_container_recreation():
             failure = client.get('/api/campaigns')
             assert failure.status_code == 502
             assert 'fixture-only-secret' not in failure.text
+            cancel_path = '/api/campaigns/12/streams/7/cancel'
+            assert client.post(cancel_path, headers=headers, json={'version': 5, 'confirmed': True}).status_code == 502
+            httpx.post(f'{fixture_url}/control', json={'mode': 'changed'}).raise_for_status()
+            assert client.get('/api/campaigns/12/streams').json()[0]['draft'] == returned.json()
+            assert client.post(cancel_path, headers=headers, json={'version': 4, 'confirmed': True}).status_code == 409
+            accepted = client.post(cancel_path, headers=headers, json={'version': 5, 'confirmed': True})
+            assert accepted.status_code == 200
+            assert accepted.json()['bindings'] == [dict(offer_id=9, share=100, state='active', pinned=False)]
+            assert accepted.json()['removed'] == []
+            assert accepted.json()['notices']
+            assert client.get('/api/campaigns/12/streams').json()[0]['conflict'] is False
+            run('up', '-d', '--force-recreate', 'app')
+            wait_ready()
+            assert client.get('/api/campaigns/12/streams').json()[0]['draft'] == accepted.json()
             httpx.post(f'{fixture_url}/control', json={'mode': 'malformed'}).raise_for_status()
             assert client.get('/api/campaigns').status_code == 502
             for mode, path in [('invalid-json', '/api/campaigns'), ('stuck-pagination', '/api/campaigns'),

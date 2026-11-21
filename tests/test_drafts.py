@@ -22,7 +22,7 @@ def test_initial_draft_survives_database_reopen_and_remote_changes(tmp_path):
         assert first.status_code == 200
         draft = first.json()[0]['draft']
         assert draft == {
-            'version': 1, 'removed': [],
+            'version': 1, 'removed': [], 'notices': [],
             'base': [{'offer_id': 9, 'share': 70, 'state': 'active'},
                      {'offer_id': 10, 'share': 30, 'state': 'active'}],
             'bindings': [{'offer_id': 9, 'share': 70, 'state': 'active', 'pinned': False},
@@ -112,7 +112,10 @@ def test_stream_or_catalogue_failure_does_not_replace_the_saved_base(tmp_path):
         remote.offers = original_offers
         assert client.get('/api/campaigns/12/streams').json()[0]['draft'] == draft
         remote.streams = lambda _: []
-        assert client.get('/api/campaigns/12/streams').json() == []
+        deleted = client.get('/api/campaigns/12/streams').json()[0]
+        assert deleted['draft'] == draft
+        assert deleted['editable'] is False
+        assert 'удалён' in deleted['read_only_reason']
 
 
 def test_concurrent_first_opens_establish_one_shared_initial_draft(tmp_path):

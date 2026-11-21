@@ -49,7 +49,10 @@ def redistribute(result):
 
 
 def same_bindings(left, right):
-    return sorted(left, key=lambda b: b['offer_id']) == sorted(right, key=lambda b: b['offer_id'])
+    left = sorted(left, key=lambda b: b['offer_id'])
+    right = sorted(right, key=lambda b: b['offer_id'])
+    # Invalid source values remain distinct: JSON true is not an integer 1%.
+    return left == right and all(type(a['share']) is type(b['share']) for a, b in zip(left, right))
 
 
 def validation_errors(bindings):
@@ -69,12 +72,15 @@ def validation_errors(bindings):
 
 def open_streams(keitaro, store, campaign_id):
     streams = keitaro.streams(campaign_id)
+    saved = store.existing(campaign_id)
+    present = {s['id'] for s in streams}
+    streams = streams + [dict(id=stream_id, deleted=True) for stream_id in saved if stream_id not in present]
     catalogue = {o['id']: o['name'] for o in keitaro.offers()} if streams else {}
     result = []
     for stream in streams:
         offers = [{k: b[k] for k in ('offer_id', 'share', 'state')} for b in stream.get('offers', [])]
         editable = stream.get('type') in ('regular', 'default') and stream.get('schema') == 'landings'
-        draft = store.open(campaign_id, stream['id'], offers) if editable else None
+        draft = store.open(campaign_id, stream['id'], offers) if editable else saved.get(stream['id'])
         result.append({
             'id': stream['id'], 'name': stream.get('name', ''),
             'type': stream.get('type', ''), 'schema': stream.get('schema', ''),
@@ -84,7 +90,8 @@ def open_streams(keitaro, store, campaign_id):
             'unavailable_offers': {str(b['offer_id']): 'Оффер недоступен в каталоге; возврат запрещён'
                                    for b in (draft['removed'] if draft else []) if b['offer_id'] not in catalogue},
             'editable': editable, 'draft': draft,
-            'read_only_reason': None if editable else 'Этот тип или схема потока доступны только для просмотра',
+            'read_only_reason': (None if editable else 'Поток удалён из Keitaro. Черновик сохранён; публикация запрещена'
+                                 if stream.get('deleted') else 'Этот тип или схема потока доступны только для просмотра; публикация запрещена'),
             'conflict': draft is not None and not same_bindings(draft['base'], offers),
             'validation_errors': validation_errors(draft['bindings']) if draft else [],
         })
