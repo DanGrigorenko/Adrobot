@@ -4,7 +4,7 @@ from pathlib import Path
 
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import JSON, Integer, String, create_engine, select
+from sqlalchemy import Boolean, JSON, Integer, String, create_engine, select
 from uuid import uuid4
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
@@ -24,10 +24,24 @@ class Draft(Base):
     base: Mapped[list] = mapped_column(JSON, nullable=False)
     bindings: Mapped[list] = mapped_column(JSON, nullable=False)
     removed: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    publication_id: Mapped[str | None] = mapped_column(String, nullable=True)
     # Push confirms these separately; editing never changes them.
     confirmed_pins: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     confirmed_removed: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
     notices: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+
+
+class Publication(Base):
+    __tablename__ = 'publications'
+
+    id: Mapped[str] = mapped_column(String, primary_key=True)
+    stream_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    campaign_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    base: Mapped[list] = mapped_column(JSON, nullable=False)
+    sent: Mapped[list] = mapped_column(JSON, nullable=False)
+    status: Mapped[str] = mapped_column(String, nullable=False)
+    completed: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    unfinished: Mapped[bool] = mapped_column(Boolean, nullable=False)
 
 
 class Creation(Base):
@@ -79,8 +93,7 @@ class DraftStore:
                 Draft.stream_id == stream_id, Draft.campaign_id == campaign_id))
             if draft is None:
                 raise LookupError('Сначала загрузите черновик потока')
-            if draft.version != version:
-                raise RuntimeError('Черновик изменён в другой вкладке. Перечитайте потоки.')
+            self.check_draft(session, draft, version)
             if action in ('remove', 'bring_back'):
                 bindings, removed = deepcopy(draft.bindings), deepcopy(draft.removed)
                 source, destination = (bindings, removed) if action == 'remove' else (removed, bindings)
@@ -120,8 +133,7 @@ class DraftStore:
                 Draft.stream_id == stream_id, Draft.campaign_id == campaign_id))
             if draft is None:
                 raise LookupError('Сначала загрузите черновик потока')
-            if draft.version != version:
-                raise RuntimeError('Черновик изменён в другой вкладке. Перечитайте потоки.')
+            self.check_draft(session, draft, version)
             previous = {b['offer_id']: b for b in draft.base}
             latest = {b['offer_id']: b for b in offers}
             changed = {offer_id for offer_id, binding in previous.items()
@@ -140,8 +152,90 @@ class DraftStore:
             # Remote bindings win over confirmed Removed. External removals are not added.
             draft.confirmed_removed = [b for b in draft.confirmed_removed if b['offer_id'] not in latest]
             draft.removed = deepcopy(draft.confirmed_removed)
+            # Acceptance resolves a finished publication's notice, not its durable record.
+            draft.publication_id = None
             draft.version += 1
             return {'version': draft.version, 'base': draft.base, 'bindings': draft.bindings, 'removed': draft.removed, 'notices': draft.notices}
+
+    @staticmethod
+    def check_draft(session, draft, version):
+        if draft.version != version:
+            raise RuntimeError('Черновик изменён в другой вкладке. Перечитайте потоки.')
+        operation = session.get(Publication, draft.publication_id) if draft.publication_id else None
+        if operation and operation.unfinished:
+            raise RuntimeError('Результат публикации не установлен. Проверьте результат; изменения заблокированы.')
+
+    @staticmethod
+    def publication_data(operation):
+        if operation is None:
+            return None
+        return dict(id=operation.id, status=operation.status, completed=operation.completed,
+                    locked=operation.unfinished, base=deepcopy(operation.base), sent=deepcopy(operation.sent))
+
+    def publication(self, campaign_id, stream_id):
+        with Session(self.engine) as session:
+            draft = session.get(Draft, stream_id)
+            if draft is None or draft.campaign_id != campaign_id:
+                raise LookupError('Сначала загрузите черновик потока')
+            return self.publication_data(session.get(Publication, draft.publication_id)) if draft.publication_id else None
+
+    def prepare_publication(self, campaign_id, stream_id, version, offers, catalogue):
+        from app.editor import same_bindings, validation_errors
+
+        with Session(self.engine) as session, session.begin():
+            session.connection().exec_driver_sql('BEGIN IMMEDIATE')
+            draft = session.get(Draft, stream_id)
+            if draft is None or draft.campaign_id != campaign_id:
+                raise LookupError('Сначала загрузите черновик потока')
+            self.check_draft(session, draft, version)
+            sent = [{k: b[k] for k in ('offer_id', 'share', 'state')} for b in draft.bindings]
+            if not same_bindings(draft.base, offers):
+                raise RuntimeError('Конфликт: Keitaro изменился относительно базы. Отбросьте черновик и загрузите актуальное.')
+            errors = validation_errors(sent)
+            if errors:
+                raise ValueError(errors[0])
+            if any(b['offer_id'] not in catalogue for b in sent):
+                raise ValueError('Оффер итогового набора недоступен в каталоге')
+            operation = Publication(id=uuid4().hex, stream_id=stream_id, campaign_id=campaign_id,
+                                    base=deepcopy(draft.base), sent=sent, status='unknown',
+                                    completed=False, unfinished=True)
+            session.add(operation)
+            draft.publication_id = operation.id
+            draft.version += 1
+            return self.publication_data(operation)
+
+    def publication_completed(self, operation_id):
+        with Session(self.engine) as session, session.begin():
+            session.get(Publication, operation_id).completed = True
+
+    def reconcile_publication(self, campaign_id, stream_id, operation_id, offers):
+        from app.editor import same_bindings
+
+        with Session(self.engine) as session, session.begin():
+            session.connection().exec_driver_sql('BEGIN IMMEDIATE')
+            draft = session.get(Draft, stream_id)
+            if draft is None or draft.campaign_id != campaign_id or draft.publication_id != operation_id:
+                raise RuntimeError('Публикация изменилась. Перечитайте потоки.')
+            operation = session.get(Publication, operation_id)
+            if not operation.unfinished:
+                return self.publication_data(operation)
+            if offers is not None and same_bindings(offers, operation.sent):
+                operation.status, operation.unfinished = 'succeeded', False
+                draft.base = deepcopy(operation.sent)
+                # A correction from JSON true to integer 1 must reach SQLite.
+                flag_modified(draft, 'base')
+                draft.confirmed_pins = [b['offer_id'] for b in draft.bindings if b['pinned']]
+                draft.confirmed_removed = deepcopy(draft.removed)
+                draft.notices = []
+            elif offers is not None and not same_bindings(offers, operation.base):
+                operation.status = 'conflict'
+                operation.unfinished = not operation.completed
+            elif offers is not None and operation.completed:
+                operation.status, operation.unfinished = 'not_applied', False
+            else:
+                operation.status = 'unknown'
+            draft.version += 1
+            return self.publication_data(operation)
 
     def prepare_creation(self, operation_id, inputs):
         with Session(self.engine) as session, session.begin():

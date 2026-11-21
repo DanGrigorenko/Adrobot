@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_packaged_ui_real_adapter_and_drafts_survive_container_recreation():
-    compose = ['docker', 'compose', '-p', 'adrobot-issue14-test', '-f', 'compose.yml', '-f', 'compose.test.yml']
+    compose = ['docker', 'compose', '-p', 'adrobot-issue15-test', '-f', 'compose.yml', '-f', 'compose.test.yml']
     app_url = f"http://127.0.0.1:{os.getenv('TEST_APP_PORT', '18080')}"
     fixture_url = f"http://127.0.0.1:{os.getenv('TEST_FIXTURE_PORT', '18081')}"
     def run(*args, check=True):
@@ -138,6 +138,45 @@ def test_packaged_ui_real_adapter_and_drafts_survive_container_recreation():
             run('up', '-d', '--force-recreate', 'app')
             wait_ready()
             assert client.get('/api/campaigns/12/streams').json()[0]['draft'] == accepted.json()
+            # Safe publication through the real HTTP adapter and containerized SQLite.
+            httpx.post(f'{fixture_url}/control', json={'mode': 'initial'}).raise_for_status()
+            latest = client.post(cancel_path, headers=headers, json={'version': accepted.json()['version'], 'confirmed': True}).json()
+            edited = client.post(path, headers=headers, json={'version': latest['version'], 'action': 'share', 'offer_id': 9, 'share': 60}).json()
+            push_path = '/api/campaigns/12/streams/7/push'
+            check_path = '/api/campaigns/12/streams/7/check-publication'
+            httpx.post(f'{fixture_url}/control', json={'mode': 'lose-push'}).raise_for_status()
+            unknown_push = client.post(push_path, headers=headers, json={'version': edited['version']})
+            assert unknown_push.status_code == 200
+            unknown_push = unknown_push.json()
+            assert unknown_push['publication']['status'] == 'unknown'
+            assert unknown_push['publication']['locked'] is True
+            run('up', '-d', '--force-recreate', 'app')
+            wait_ready()
+            assert client.get('/api/campaigns/12/streams').json()[0]['publication'] == unknown_push['publication']
+            verified = client.post(check_path, headers=headers, json={'version': unknown_push['draft']['version']}).json()
+            assert verified['publication']['status'] == 'succeeded'
+            evidence = httpx.get(f'{fixture_url}/control').json()
+            assert evidence['publication_payloads'] == [{'offers': [
+                {'offer_id': 9, 'share': 60, 'state': 'active'}, {'offer_id': 10, 'share': 40, 'state': 'active'}]}]
+            pinned = client.post(path, headers=headers, json={'version': verified['draft']['version'], 'action': 'pin', 'offer_id': 10}).json()
+            noop = client.post(push_path, headers=headers, json={'version': pinned['version']}).json()
+            assert noop['publication']['status'] == 'succeeded'
+            assert len(httpx.get(f'{fixture_url}/control').json()['publication_payloads']) == 1
+            changed = client.post(path, headers=headers, json={'version': noop['draft']['version'], 'action': 'unpin', 'offer_id': 9}).json()
+            changed = client.post(path, headers=headers, json={'version': changed['version'], 'action': 'share', 'offer_id': 10, 'share': 50}).json()
+            httpx.post(f'{fixture_url}/control', json={'mode': 'push-read-failure'}).raise_for_status()
+            failed_read = client.post(push_path, headers=headers, json={'version': changed['version']}).json()
+            assert failed_read['publication']['status'] == 'unknown'
+            assert failed_read['publication']['completed'] is True
+            run('up', '-d', '--force-recreate', 'app')
+            wait_ready()
+            saved = client.get('/api/campaigns/12/drafts').json()[0]
+            assert saved['publication'] == failed_read['publication']
+            still_unknown = client.post(check_path, headers=headers, json={'version': saved['draft']['version']}).json()
+            assert still_unknown['publication']['locked'] is True
+            httpx.post(f'{fixture_url}/control', json={'mode': 'initial'}).raise_for_status()
+            assert client.post(check_path, headers=headers, json={'version': still_unknown['draft']['version']}).json()['publication']['status'] == 'succeeded'
+            assert len(httpx.get(f'{fixture_url}/control').json()['publication_payloads']) == 2
             httpx.post(f'{fixture_url}/control', json={'mode': 'malformed'}).raise_for_status()
             assert client.get('/api/campaigns').status_code == 502
             for mode, path in [('invalid-json', '/api/campaigns'), ('stuck-pagination', '/api/campaigns'),
