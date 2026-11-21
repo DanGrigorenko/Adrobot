@@ -55,8 +55,12 @@ class Handler(BaseHTTPRequestHandler):
         if self.headers.get('Api-Key') != 'fixture-only-secret':
             return self.send_json({}, 401)
         payload = json.loads(self.rfile.read(int(self.headers.get('Content-Length', '0'))))
-        if self.path != '/admin_api/v1/streams/7' or set(payload) != {'offers'}:
-            return self.send_json({'error': 'only offers allowed'}, 400)
+        created = next((s for s in created_streams if self.path == f"/admin_api/v1/streams/{s['id']}"), None)
+        if set(payload) != {'offers'} or (self.path != '/admin_api/v1/streams/7' and created is None):
+            return self.send_json({'error': 'only offers allowed on a known stream'}, 400)
+        if created is not None:
+            created['offers'] = payload['offers']
+            return self.send_json({})
         publication_payloads.append(payload)
         published_offers = payload['offers']
         if mode == 'lose-push':
@@ -105,7 +109,8 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == '/admin_api/v1/traffic_sources':
             return self.send_json([{'id': 4, 'name': 'Test source'}])
         if self.path == '/admin_api/v1/offers':
-            return self.send_json([{'id': 9, 'name': 'Оффер А'}, {'id': 10, 'name': 'Оффер Б'}, {'id': 11, 'name': 'Оффер В'}])
+            return self.send_json([{'id': 9, 'name': 'Оффер А'}, {'id': 10, 'name': 'Оффер Б'},
+                                   {'id': 11, 'name': 'Длинноеназваниеоффера' * 12 if mode == 'long-names' else 'Оффер В'}])
         if self.path == '/admin_api/v1/campaigns/12/streams':
             offers = [{'offer_id': 9, 'share': 70, 'state': 'active'}, {'offer_id': 10, 'share': 30, 'state': 'active'}]
             if published_offers is not None:
