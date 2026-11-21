@@ -6,10 +6,12 @@ from typing import Literal
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
+from fastapi.exceptions import RequestValidationError
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, StrictInt
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
+from app.creator import PreviewInput, final_name, preview, settings
 from app.editor import open_streams
 from app.keitaro import HttpKeitaro, validate_base_url
 from app.storage import DraftStore
@@ -65,9 +67,54 @@ def create_app(keitaro=None, *, database_url=None, keitaro_url=None, frontend_di
             response.headers['Cache-Control'] = 'no-store'
         return response
 
+    @app.exception_handler(RequestValidationError)
+    async def invalid_request(request: Request, error):
+        messages = {
+            'name': 'Название: введите от 1 до 255 символов',
+            'geos': 'GEO: выберите хотя бы одну страну; допустимы двухбуквенные коды ISO 3166-1',
+            'offer_id': 'Оффер: выберите существующий оффер с положительным целым ID',
+        }
+        details = list(dict.fromkeys(messages.get(str(item['loc'][-1]), 'Некорректный формат запроса')
+                                    for item in error.errors()))
+        return JSONResponse({'detail': '; '.join(details)}, status_code=422)
+
     @app.get('/api/health')
     def health():
         return {'status': 'ok'}
+
+    @app.get('/api/offers')
+    def offers(q: str = ''):
+        query = q.strip().casefold()
+        try:
+            return [offer for offer in keitaro.offers()
+                    if not query or query in offer['name'].casefold() or query == str(offer['id'])]
+        except ConnectionError:
+            raise HTTPException(status_code=502, detail='Не удалось загрузить каталог офферов из Keitaro') from None
+
+    @app.get('/api/creator/name')
+    def creator_name(name: str = ''):
+        try:
+            return {'name': final_name(name)}
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from None
+
+    @app.get('/api/creator/settings')
+    def creator_settings():
+        try:
+            return settings(keitaro)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from None
+        except ConnectionError:
+            raise HTTPException(status_code=502, detail='Не удалось проверить настройки в Keitaro') from None
+
+    @app.post('/api/creator/preview')
+    def creator_preview(data: PreviewInput):
+        try:
+            return preview(keitaro, data)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from None
+        except ConnectionError:
+            raise HTTPException(status_code=502, detail='Не удалось проверить настройки или оффер в Keitaro') from None
 
     @app.get('/api/campaigns')
     def campaigns(q: str = ''):

@@ -7,6 +7,10 @@ services:
       KEITARO_BASE_URL: ${KEITARO_BASE_URL:-https://keitaro.example}
       KEITARO_API_KEY: ${KEITARO_API_KEY:-}
       APP_ORIGIN: ${APP_ORIGIN:-http://127.0.0.1:8000}
+      CREATOR_DOMAIN_ID: ${CREATOR_DOMAIN_ID:-}
+      CREATOR_GROUP_ID: ${CREATOR_GROUP_ID:-}
+      CREATOR_TRAFFIC_SOURCE_ID: ${CREATOR_TRAFFIC_SOURCE_ID:-}
+      CREATOR_NAME_PREFIX: ${CREATOR_NAME_PREFIX:-}
       DATABASE_URL: sqlite:////data/adrobot.sqlite
     volumes:
       - sqlite-data:/data

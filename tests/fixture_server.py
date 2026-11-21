@@ -48,6 +48,12 @@ class Handler(BaseHTTPRequestHandler):
             offset = int(parse_qs(urlsplit(self.path).query).get('offset', ['0'])[0])
             campaigns = [{'id': 12, 'name': 'Лето — основные офферы'}, {'id': 120, 'name': 'Осень'}]
             return self.send_json(campaigns[offset:offset + 1])
+        if self.path == '/admin_api/v1/domains':
+            return self.send_json([{'id': 2, 'name': 'tracking.example'}])
+        if self.path == '/admin_api/v1/groups?type=campaigns':
+            return self.send_json([{'id': 3, 'name': 'Test campaigns'}])
+        if self.path == '/admin_api/v1/traffic_sources':
+            return self.send_json([{'id': 4, 'name': 'Test source'}])
         if self.path == '/admin_api/v1/offers':
             return self.send_json([{'id': 9, 'name': 'Оффер А'}, {'id': 10, 'name': 'Оффер Б'}])
         if self.path == '/admin_api/v1/campaigns/12/streams':

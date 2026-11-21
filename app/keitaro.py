@@ -10,6 +10,9 @@ class KeitaroClient(Protocol):
     def campaigns(self) -> list[dict]: ...
     def streams(self, campaign_id: int) -> list[dict]: ...
     def offers(self) -> list[dict]: ...
+    def domains(self) -> list[dict]: ...
+    def groups(self) -> list[dict]: ...
+    def traffic_sources(self) -> list[dict]: ...
 
 
 class NamedEntity(BaseModel):
@@ -83,6 +86,15 @@ class HttpKeitaro:
 
     def offers(self):
         return self._list('offers', NamedEntity)
+
+    def domains(self):
+        return self._list('domains', NamedEntity)
+
+    def groups(self):
+        return self._list('groups', NamedEntity, {'type': 'campaigns'})
+
+    def traffic_sources(self):
+        return self._list('traffic_sources', NamedEntity)
 
     def close(self):
         self._http.close()
