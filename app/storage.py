@@ -86,7 +86,7 @@ class DraftStore:
             offer_ids = [b['offer_id'] for b in offers]
             if (clean and not (operation and operation.unfinished)
                     and len(set(base_ids)) == len(base_ids) and len(set(offer_ids)) == len(offer_ids)
-                    and set(base_ids) != set(offer_ids)):
+                    and not same_bindings(draft.base, offers)):
                 self._accept_remote(draft, offers)
                 draft.version += 1
             return {'version': draft.version, 'base': draft.base, 'bindings': draft.bindings, 'removed': draft.removed, 'notices': draft.notices}
