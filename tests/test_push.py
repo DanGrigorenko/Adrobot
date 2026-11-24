@@ -67,6 +67,27 @@ def test_verified_push_preserves_other_configuration_and_confirms_removed_and_pi
         assert len(remote.writes) == 1
 
 
+def test_fetch_clean_draft_preserves_removed_and_unchanged_confirmed_pin(tmp_path):
+    remote = PublishingKeitaro()
+    remote.bindings.append(dict(offer_id=3, share=0, state='active'))
+    with TestClient(create_app(remote, database_url=f"sqlite:///{tmp_path / 'drafts.db'}")) as client:
+        current(client)
+        assert action(client, 1, 'pin', offer_id=1).status_code == 200
+        assert action(client, 2, 'remove', offer_id=3).status_code == 200
+        saved = publish(client, 3).json()['draft']
+        remote.remote_streams[0]['offers'][1]['state'] = 'disabled'
+        fetched = current(client)
+        assert fetched['conflict'] is False
+        assert fetched['draft']['bindings'][0]['pinned'] is True
+        assert fetched['draft']['bindings'][1]['state'] == 'disabled'
+        assert fetched['draft']['removed'] == saved['removed']
+        remote.remote_streams[0]['offers'][0]['share'] = 60
+        changed = current(client)['draft']
+        assert changed['bindings'][0]['pinned'] is False
+        assert changed['removed'] == saved['removed']
+        assert any('Offer 1 was unpinned' in notice for notice in changed['notices'])
+
+
 def test_lost_response_recovers_only_by_read_after_reopening_database(tmp_path):
     remote = PublishingKeitaro()
     update = remote.update_offers
@@ -209,6 +230,8 @@ def test_push_preflight_rejects_unsafe_states_without_mutating_draft(tmp_path, c
             remote.failure = True
         assert publish(client, 1).status_code == expected
         remote.failure = False
+        if change == 'external':
+            remote.bindings[0]['share'] = 70
         assert next(s for s in client.get(STREAMS).json() if s['id'] == 7)['draft'] == saved
         assert remote.writes == []
 
@@ -230,9 +253,10 @@ def test_equal_sets_or_pin_only_confirm_locally_but_recheck_remote(tmp_path, pin
         assert saved['bindings'][0]['pinned'] is pin_only
         assert cancel(client, saved['version']).json()['bindings'][1]['pinned'] is pin_only
         assert remote.writes == []
-        # Even a no-op must reject stale base and unavailable offers.
+        # Even a no-op must reject a stale base before the next Fetch.
+        version = current(client)['draft']['version']
         remote.remote_streams[0]['offers'][0]['share'] = 20
-        assert publish(client, current(client)['draft']['version']).status_code == 409
+        assert publish(client, version).status_code == 409
         assert remote.writes == []
 
 

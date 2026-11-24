@@ -143,6 +143,23 @@ def test_cancel_undoes_unpublished_bring_back_and_accepts_external_return(tmp_pa
         assert accepted['bindings'][0] == dict(offer_id=1, share=70, state='active', pinned=False)
 
 
+@pytest.mark.parametrize('change', ['share', 'status'])
+def test_fetch_accepts_external_changes_for_clean_draft(tmp_path, change):
+    remote = Keitaro()
+    with TestClient(create_app(remote, database_url=f"sqlite:///{tmp_path / 'drafts.db'}")) as client:
+        initial = current(client)['draft']
+        if change == 'share':
+            remote.bindings[0]['share'], remote.bindings[1]['share'] = 50, 50
+        else:
+            remote.bindings[0]['state'] = 'disabled'
+        fetched = current(client)
+        assert fetched['conflict'] is False
+        assert fetched['draft']['version'] == initial['version'] + 1
+        assert fetched['draft']['base'] == remote.bindings
+        assert fetched['draft']['bindings'] == [dict(b, pinned=False) for b in remote.bindings]
+        assert current(client)['draft'] == fetched['draft']
+
+
 @pytest.mark.parametrize('change', ['share', 'status', 'removed'])
 def test_fetch_preserves_conflicting_pins_and_cancel_reports_external_pin_loss(tmp_path, change):
     remote = Keitaro()
