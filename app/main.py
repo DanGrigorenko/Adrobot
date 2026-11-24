@@ -69,7 +69,7 @@ def create_app(keitaro=None, *, database_url=None, keitaro_url=None, frontend_di
             if (request.headers.get('origin') != origin
                     or request.headers.get('x-adrobot-request') != '1'
                     or request.headers.get('sec-fetch-site') == 'cross-site'):
-                return JSONResponse({'detail': 'Запрос отклонён: проверка CSRF'}, status_code=403)
+                return JSONResponse({'detail': 'Request rejected: CSRF validation failed'}, status_code=403)
         response = await call_next(request)
         response.headers['X-Content-Type-Options'] = 'nosniff'
         response.headers['Referrer-Policy'] = 'no-referrer'
@@ -84,11 +84,11 @@ def create_app(keitaro=None, *, database_url=None, keitaro_url=None, frontend_di
     @app.exception_handler(RequestValidationError)
     async def invalid_request(request: Request, error):
         messages = {
-            'name': 'Название: введите от 1 до 255 символов',
-            'geos': 'GEO: выберите хотя бы одну страну; допустимы двухбуквенные коды ISO 3166-1',
-            'offer_id': 'Оффер: выберите существующий оффер с положительным целым ID',
+            'name': 'Name: enter between 1 and 255 characters',
+            'geos': 'GEO: select at least one country using two-letter ISO 3166-1 codes',
+            'offer_id': 'Offer: select an existing offer with a positive integer ID',
         }
-        details = list(dict.fromkeys(messages.get(str(item['loc'][-1]), 'Некорректный формат запроса')
+        details = list(dict.fromkeys(messages.get(str(item['loc'][-1]), 'Invalid request format')
                                     for item in error.errors()))
         return JSONResponse({'detail': '; '.join(details)}, status_code=422)
 
@@ -101,9 +101,10 @@ def create_app(keitaro=None, *, database_url=None, keitaro_url=None, frontend_di
         query = q.strip().casefold()
         try:
             return [offer for offer in keitaro.offers()
-                    if not query or query in offer['name'].casefold() or query == str(offer['id'])]
+                    if not query or (str(offer['id']).startswith(query) if query.isdecimal()
+                                     else query in offer['name'].casefold())]
         except ConnectionError:
-            raise HTTPException(status_code=502, detail='Не удалось загрузить каталог офферов из Keitaro') from None
+            raise HTTPException(status_code=502, detail='Could not load the offer catalog from Keitaro') from None
 
     @app.get('/api/creator/name')
     def creator_name(name: str = ''):
@@ -119,7 +120,7 @@ def create_app(keitaro=None, *, database_url=None, keitaro_url=None, frontend_di
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error)) from None
         except ConnectionError:
-            raise HTTPException(status_code=502, detail='Не удалось проверить настройки в Keitaro') from None
+            raise HTTPException(status_code=502, detail='Could not verify settings in Keitaro') from None
 
     @app.post('/api/creator/preview')
     def creator_preview(data: PreviewInput):
@@ -128,13 +129,13 @@ def create_app(keitaro=None, *, database_url=None, keitaro_url=None, frontend_di
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error)) from None
         except ConnectionError:
-            raise HTTPException(status_code=502, detail='Не удалось проверить настройки или оффер в Keitaro') from None
+            raise HTTPException(status_code=502, detail='Could not verify settings or the offer in Keitaro') from None
 
     def creation_result(operation):
         result = {k: v for k, v in operation.items() if k != 'plan'}
         if result['status'] == 'succeeded':
             result['editor_url'] = f"/?campaign={result['campaign_id']}"
-            result['keitaro_url'] = f"{base_url}/admin/#!/campaigns/{result['campaign_id']}"
+            result['keitaro_url'] = f"{base_url}/admin/#!/campaign.editor/{result['campaign_id']}"
         return result
 
     @app.post('/api/creator/operations')
@@ -171,9 +172,9 @@ def create_app(keitaro=None, *, database_url=None, keitaro_url=None, frontend_di
         try:
             results = keitaro.campaigns()
         except ConnectionError:
-            raise HTTPException(status_code=502, detail='Keitaro недоступен или вернул некорректный ответ') from None
+            raise HTTPException(status_code=502, detail='Keitaro is unavailable or returned an invalid response') from None
         return [
-            {'id': c['id'], 'name': c['name'], 'keitaro_url': f"{base_url}/admin/#!/campaigns/{c['id']}"}
+            {'id': c['id'], 'name': c['name'], 'keitaro_url': f"{base_url}/admin/#!/campaign.editor/{c['id']}"}
             for c in results
             if not query or query in c['name'].casefold() or query == str(c['id'])
         ]
@@ -181,13 +182,13 @@ def create_app(keitaro=None, *, database_url=None, keitaro_url=None, frontend_di
     @app.get('/api/campaigns/{campaign_id}/streams')
     def streams(campaign_id: int):
         if campaign_id <= 0:
-            raise HTTPException(status_code=422, detail='ID кампании должен быть положительным')
+            raise HTTPException(status_code=422, detail='Campaign ID must be positive')
         try:
             result = open_streams(keitaro, store, campaign_id)
         except ConnectionError:
-            raise HTTPException(status_code=502, detail='Keitaro недоступен или вернул некорректный ответ') from None
+            raise HTTPException(status_code=502, detail='Keitaro is unavailable or returned an invalid response') from None
         for stream in result:
-            stream['keitaro_url'] = f'{base_url}/admin/#!/campaigns/{campaign_id}'
+            stream['keitaro_url'] = f'{base_url}/admin/#!/campaign.editor/{campaign_id}'
         return result
 
     @app.get('/api/campaigns/{campaign_id}/drafts')
@@ -196,7 +197,7 @@ def create_app(keitaro=None, *, database_url=None, keitaro_url=None, frontend_di
         return [dict(id=stream_id, name='', type='', schema='', offers=[], offer_names={},
                      unavailable_offers={}, editable=False, draft=draft, conflict=False,
                      validation_errors=[], publication=store.publication(campaign_id, stream_id),
-                     read_only_reason='Актуальное состояние Keitaro недоступно. Показан сохранённый черновик')
+                     read_only_reason='Current Keitaro state is unavailable. Showing the saved draft')
                 for stream_id, draft in store.existing(campaign_id).items()]
 
     @app.post('/api/campaigns/{campaign_id}/streams/{stream_id}/actions')
@@ -204,11 +205,11 @@ def create_app(keitaro=None, *, database_url=None, keitaro_url=None, frontend_di
         try:
             remote = next((s for s in keitaro.streams(campaign_id) if s['id'] == stream_id), None)
             if not stream_is_editable(remote):
-                raise HTTPException(status_code=409, detail='Поток больше не поддерживает редактирование офферов')
+                raise HTTPException(status_code=409, detail='The stream no longer supports offer editing')
             catalogue = {o['id'] for o in keitaro.offers()} if body.action in ('add', 'bring_back') else None
             return store.edit(campaign_id, stream_id, body.version, body.action, body.offer_id, body.share, catalogue)
         except ConnectionError:
-            raise HTTPException(status_code=502, detail='Не удалось проверить доступность потока в Keitaro') from None
+            raise HTTPException(status_code=502, detail='Could not check the stream in Keitaro') from None
         except LookupError as error:
             raise HTTPException(status_code=404, detail=str(error)) from None
         except RuntimeError as error:
@@ -219,17 +220,17 @@ def create_app(keitaro=None, *, database_url=None, keitaro_url=None, frontend_di
     @app.post('/api/campaigns/{campaign_id}/streams/{stream_id}/cancel')
     def cancel(campaign_id: int, stream_id: int, body: CancelDraft):
         if not body.confirmed:
-            raise HTTPException(status_code=422, detail='Подтвердите отбрасывание черновика')
+            raise HTTPException(status_code=422, detail='Confirm that you want to discard the draft')
         try:
             remote = next((s for s in keitaro.streams(campaign_id) if s['id'] == stream_id), None)
             if not stream_is_editable(remote):
-                raise HTTPException(status_code=409, detail='Поток удалён или больше не поддерживает редактирование. Черновик сохранён.')
+                raise HTTPException(status_code=409, detail='The stream was deleted or no longer supports editing. The draft has been saved.')
             # Complete all reads before acquiring SQLite's writer lock.
             keitaro.offers()
             offers = [{k: b[k] for k in ('offer_id', 'share', 'state')} for b in remote.get('offers', [])]
             return store.cancel(campaign_id, stream_id, body.version, offers)
         except ConnectionError:
-            raise HTTPException(status_code=502, detail='Не удалось прочитать Keitaro. Черновик, Pin и Removed сохранены.') from None
+            raise HTTPException(status_code=502, detail='Could not read from Keitaro. The draft, pins, and removed offers have been preserved.') from None
         except LookupError as error:
             raise HTTPException(status_code=404, detail=str(error)) from None
         except RuntimeError as error:
@@ -245,7 +246,7 @@ def create_app(keitaro=None, *, database_url=None, keitaro_url=None, frontend_di
         except ValueError as error:
             raise HTTPException(status_code=422, detail=str(error)) from None
         except ConnectionError:
-            raise HTTPException(status_code=502, detail='Не удалось проверить Keitaro перед публикацией. Запись не отправлена.') from None
+            raise HTTPException(status_code=502, detail='Could not check Keitaro before publishing. No write was sent.') from None
 
     @app.post('/api/campaigns/{campaign_id}/streams/{stream_id}/push')
     def push(campaign_id: int, stream_id: int, body: PublishDraft):
@@ -262,7 +263,7 @@ def create_app(keitaro=None, *, database_url=None, keitaro_url=None, frontend_di
     @app.get('/', include_in_schema=False)
     def index():
         if not (build / 'index.html').is_file():
-            raise HTTPException(status_code=503, detail='Интерфейс не собран')
+            raise HTTPException(status_code=503, detail='The frontend has not been built')
         return FileResponse(build / 'index.html', headers={'Cache-Control': 'no-cache'})
 
     return app

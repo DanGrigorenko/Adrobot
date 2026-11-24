@@ -28,7 +28,7 @@ def act(client, version, action='share', offer_id=1, **extra):
     return client.post(PATH, headers=HEADERS, json=dict(version=version, action=action, offer_id=offer_id, **extra))
 
 
-def test_manual_share_pins_redistributes_and_survives_reopen(tmp_path):
+def test_manual_share_redistributes_without_pinning_and_survives_reopen(tmp_path):
     url = f"sqlite:///{tmp_path / 'drafts.db'}"
     remote = Keitaro()
     with TestClient(create_app(remote, database_url=url)) as client:
@@ -37,12 +37,26 @@ def test_manual_share_pins_redistributes_and_survives_reopen(tmp_path):
         assert response.status_code == 200
         saved = response.json()
         assert saved['version'] == 2
-        assert [(b['share'], b['pinned']) for b in saved['bindings']] == [(50, True), (25, False), (25, False)]
+        assert [(b['share'], b['pinned']) for b in saved['bindings']] == [(50, False), (25, False), (25, False)]
         assert saved['base'] == initial['base']
         assert draft(client, 1) == initial
     with TestClient(create_app(remote, database_url=url)) as client:
         assert draft(client) == saved
         assert remote.bindings == saved['base']
+
+
+def test_sequential_shares_and_explicit_pin(tmp_path):
+    with TestClient(create_app(Keitaro(), database_url=f"sqlite:///{tmp_path / 'drafts.db'}")) as client:
+        draft(client)
+        first = act(client, 1, share=50).json()
+        assert [(b['share'], b['pinned']) for b in first['bindings']] == [(50, False), (25, False), (25, False)]
+        second = act(client, 2, offer_id=2, share=40).json()
+        assert [(b['share'], b['pinned']) for b in second['bindings']] == [(30, False), (40, False), (30, False)]
+        assert act(client, 3, 'pin', offer_id=2).status_code == 200
+        fourth = act(client, 4, offer_id=1, share=50).json()
+        assert [(b['share'], b['pinned']) for b in fourth['bindings']] == [(50, False), (40, True), (10, False)]
+        fifth = act(client, 5, offer_id=2, share=30).json()
+        assert [(b['share'], b['pinned']) for b in fifth['bindings']] == [(35, False), (30, True), (35, False)]
 
 
 def test_pin_preserves_70_30_and_unpin_redistributes_by_id(tmp_path):
@@ -67,20 +81,21 @@ def test_invalid_input_is_atomic(tmp_path, value):
 def test_impossible_pinned_sum_and_stale_actions_are_atomic(tmp_path):
     with TestClient(create_app(Keitaro(), database_url=f"sqlite:///{tmp_path / 'drafts.db'}")) as client:
         draft(client)
-        saved = act(client, 1, share=60).json()
-        assert act(client, 2, offer_id=2, share=50).status_code == 422
+        assert act(client, 1, share=60).status_code == 200
+        saved = act(client, 2, 'pin').json()
+        assert act(client, 3, offer_id=2, share=50).status_code == 422
         assert draft(client) == saved
         stale = act(client, 1, share=20)
         assert stale.status_code == 409
-        assert 'Перечитайте' in stale.json()['detail']
+        assert 'Reload' in stale.json()['detail']
         assert draft(client) == saved
 
 
 @pytest.mark.parametrize(('shares', 'states', 'value', 'expected'), [
-    ((34, 33, 33), None, 100, [(100, True), (0, False), (0, False)]),
-    ((20.5, 79.5, 31.5), ['active', 'active', 'disabled'], 40, [(40, True), (60, False), (31.5, False)]),
-    ((100,), None, 100, [(100, True)]),
-    ((25, 25, 25, 25), None, 25, [(25, True), (25, False), (25, False), (25, False)]),
+    ((34, 33, 33), None, 100, [(100, False), (0, False), (0, False)]),
+    ((20.5, 79.5, 31.5), ['active', 'active', 'disabled'], 40, [(40, False), (60, False), (31.5, False)]),
+    ((100,), None, 100, [(100, False)]),
+    ((25, 25, 25, 25), None, 25, [(25, False), (25, False), (25, False), (25, False)]),
 ])
 def test_recalculation_examples_preserve_disabled(tmp_path, shares, states, value, expected):
     with TestClient(create_app(Keitaro(shares, states), database_url=f"sqlite:///{tmp_path / 'drafts.db'}")) as client:

@@ -5,7 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.main import create_app
-from tests.test_refresh_cancel import Keitaro, HEADERS, STREAMS, ACTIONS, CANCEL, current, action, cancel
+from tests.test_refresh_cancel import Keitaro, HEADERS, STREAMS, current, action, cancel
 
 PUSH = STREAMS + '/7/push'
 CHECK = STREAMS + '/7/check-publication'
@@ -39,9 +39,10 @@ def test_verified_push_preserves_other_configuration_and_confirms_removed_and_pi
     with TestClient(create_app(remote, database_url=url)) as client:
         current(client)
         assert action(client, 1).status_code == 200
-        assert action(client, 2, 'remove', offer_id=1).status_code == 200
-        assert action(client, 3, 'pin', offer_id=2).status_code == 200
-        response = publish(client, 4)
+        assert action(client, 2, 'pin', offer_id=1).status_code == 200
+        assert action(client, 3, 'remove', offer_id=1).status_code == 200
+        assert action(client, 4, 'pin', offer_id=2).status_code == 200
+        response = publish(client, 5)
         assert response.status_code == 200
         result = response.json()
         assert result['publication']['status'] == 'succeeded'
@@ -62,7 +63,7 @@ def test_verified_push_preserves_other_configuration_and_confirms_removed_and_pi
         unpinned = action(client, restored['version'], 'unpin', offer_id=2).json()
         returned = action(client, unpinned['version'], 'bring_back', offer_id=1)
         assert returned.status_code == 200
-        assert [(b['offer_id'], b['share'], b['pinned']) for b in returned.json()['bindings']] == [(2, 30, False), (1, 70, True)]
+        assert [(b['offer_id'], b['share'], b['pinned']) for b in returned.json()['bindings']] == [(2, 50, False), (1, 50, False)]
         assert len(remote.writes) == 1
 
 

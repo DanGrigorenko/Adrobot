@@ -36,6 +36,7 @@ class WritingKeitaro(CreatorKeitaro):
         self.written('campaign')
 
     def create_stream(self, campaign_id, payload):
+        assert campaign_id == 100 and payload.get('name')
         self.stream_rows.append(dict(deepcopy(payload), id=len(self.stream_rows) + 200))
         self.written(payload['type'])
 
@@ -116,6 +117,60 @@ def resume(client, op):
     return response.json()
 
 
+def test_server_metadata_on_nested_stream_fields_is_accepted(setup_creation):
+    remote, db = setup_creation
+    original = remote.streams
+
+    def streams(campaign_id):
+        rows = original(campaign_id)
+        for row in rows:
+            for field in ('filters', 'offers'):
+                for item in row.get(field, []):
+                    item.update(id=11, stream_id=row['id'], oid=11)
+        return rows
+
+    remote.streams = streams
+    with TestClient(create_app(remote, database_url=db)) as client:
+        result = resume(client, prepare(client, geos=['DE']))
+        assert result['status'] == 'succeeded', result
+        assert remote.writes == ['campaign', 'regular', 'default', 'enable']
+
+
+@pytest.mark.parametrize('fault', ['missing', 'mode', 'payload', 'extra-filter', 'extra-country'])
+@pytest.mark.parametrize('final_check', [False, True])
+def test_nested_filter_mismatch_blocks_before_activation(setup_creation, fault, final_check):
+    remote, db = setup_creation
+    original = remote.streams
+    calls_with_both = 0
+
+    def streams(campaign_id):
+        nonlocal calls_with_both
+        rows = original(campaign_id)
+        if len(rows) == 2:
+            calls_with_both += 1
+        if rows and (not final_check or (len(rows) == 2 and calls_with_both >= 1)):
+            filters = rows[0]['filters']
+            filters[0].update(id=11, stream_id=rows[0]['id'], oid=11)
+            if fault == 'missing':
+                del filters[0]['mode']
+            elif fault == 'mode':
+                filters[0]['mode'] = 'reject'
+            elif fault == 'payload':
+                filters[0]['payload'] = ['FR']
+            elif fault == 'extra-filter':
+                filters.append(deepcopy(filters[0]))
+            else:
+                filters[0]['payload'].append('FR')
+        return rows
+
+    remote.streams = streams
+    with TestClient(create_app(remote, database_url=db)) as client:
+        result = resume(client, prepare(client, geos=['DE']))
+        assert result['status'] == 'blocked'
+        assert 'enable' not in remote.writes
+        assert ('default' in remote.writes) == final_check
+
+
 @pytest.mark.parametrize('geos', [['DE'], ['DE', 'FR', 'DE']])
 def test_confirmed_creation_verifies_routes_and_active_campaign(setup_creation, geos):
     remote, db = setup_creation
@@ -128,12 +183,13 @@ def test_confirmed_creation_verifies_routes_and_active_campaign(setup_creation, 
         assert result['status'] == 'succeeded'
         assert result['campaign_id'] == 100
         assert result['editor_url'] == '/?campaign=100'
-        assert result['keitaro_url'] == 'https://keitaro.example/admin/#!/campaigns/100'
+        assert result['keitaro_url'] == 'https://keitaro.example/admin/#!/campaign.editor/100'
         assert remote.writes == ['campaign', 'regular', 'default', 'enable']
         assert remote.campaign_rows[0] == {
             'id': 100, 'name': 'test_Summer', 'alias': op['alias'], 'state': 'active', 'type': 'position',
             'domain_id': 2, 'group_id': 3, 'traffic_source_id': 4,
         }
+        assert [row['name'] for row in remote.stream_rows] == ['GEO → Google', 'Default distribution']
         assert remote.stream_rows[0]['filters'] == [
             {'name': 'country', 'mode': 'accept', 'payload': list(dict.fromkeys(geos))}]
         assert remote.stream_rows[0]['action_payload'] == 'https://google.com'
@@ -180,7 +236,7 @@ def test_creation_rechecks_prerequisites_before_any_remote_write(setup_creation,
         assert remote.writes == []
 
 
-@pytest.mark.parametrize('fault', ['missing', 'ambiguous', 'campaign-mismatch', 'stream-mismatch', 'extra-stream'])
+@pytest.mark.parametrize('fault', ['missing', 'ambiguous', 'campaign-mismatch', 'stream-mismatch', 'stream-name', 'extra-stream'])
 def test_unknown_or_mismatched_recovery_never_issues_another_write(setup_creation, fault):
     remote, db = setup_creation
     remote.lose = 'regular'
@@ -195,6 +251,8 @@ def test_unknown_or_mismatched_recovery_never_issues_another_write(setup_creatio
             remote.campaign_rows[0]['domain_id'] = 999
         elif fault == 'stream-mismatch':
             remote.stream_rows[0]['action_payload'] = 'https://wrong.example'
+        elif fault == 'stream-name':
+            remote.stream_rows[0]['name'] = 'Wrong name'
         else:
             remote.stream_rows.append({'id': 999, 'type': 'default', 'schema': 'landings', 'offers': []})
         before = list(remote.writes)

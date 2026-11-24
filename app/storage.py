@@ -70,12 +70,25 @@ class DraftStore:
     def open(self, campaign_id, stream_id, offers):
         bindings = [dict(binding, pinned=False) for binding in offers]
         with Session(self.engine) as session, session.begin():
+            session.connection().exec_driver_sql('BEGIN IMMEDIATE')
             # A concurrent first open cannot replace an already established base.
             session.execute(insert(Draft).values(
                 stream_id=stream_id, campaign_id=campaign_id, version=1,
                 base=deepcopy(offers), bindings=bindings,
             ).on_conflict_do_nothing(index_elements=['stream_id']))
             draft = session.scalar(select(Draft).where(Draft.stream_id == stream_id))
+            from app.editor import same_bindings
+            operation = session.get(Publication, draft.publication_id) if draft.publication_id else None
+            plain = [{k: b[k] for k in ('offer_id', 'share', 'state')} for b in draft.bindings]
+            clean = (same_bindings(plain, draft.base) and draft.removed == draft.confirmed_removed
+                     and {b['offer_id'] for b in draft.bindings if b['pinned']} == set(draft.confirmed_pins))
+            base_ids = [b['offer_id'] for b in draft.base]
+            offer_ids = [b['offer_id'] for b in offers]
+            if (clean and not (operation and operation.unfinished)
+                    and len(set(base_ids)) == len(base_ids) and len(set(offer_ids)) == len(offer_ids)
+                    and set(base_ids) != set(offer_ids)):
+                self._accept_remote(draft, offers)
+                draft.version += 1
             return {'version': draft.version, 'base': draft.base, 'bindings': draft.bindings, 'removed': draft.removed, 'notices': draft.notices}
 
     def existing(self, campaign_id):
@@ -92,55 +105,67 @@ class DraftStore:
             draft = session.scalar(select(Draft).where(
                 Draft.stream_id == stream_id, Draft.campaign_id == campaign_id))
             if draft is None:
-                raise LookupError('Сначала загрузите черновик потока')
+                raise LookupError('Load the stream draft first')
             self.check_draft(session, draft, version)
             if action in ('remove', 'bring_back'):
                 bindings, removed = deepcopy(draft.bindings), deepcopy(draft.removed)
                 source, destination = (bindings, removed) if action == 'remove' else (removed, bindings)
                 matches = [b for b in source if b['offer_id'] == offer_id]
                 if len(matches) != 1:
-                    raise ValueError('Привязка не найдена или ID повторяется')
+                    raise ValueError('Binding not found or ID is duplicated')
                 target = matches[0]
                 if action == 'bring_back' and offer_id not in catalogue:
-                    raise ValueError('Оффер недоступен в каталоге; возврат запрещён')
+                    raise ValueError('Offer is unavailable in the catalog; it cannot be brought back')
                 source.remove(target)
+                if action == 'bring_back':
+                    target['pinned'] = False
                 destination.append(target)
                 if target['state'] == 'active':
                     if not any(b['state'] == 'active' for b in bindings):
-                        raise ValueError('Нельзя удалить последнюю активную привязку')
+                        raise ValueError('Cannot remove the last active binding')
                     redistribute(bindings)
                 draft.bindings, draft.removed = bindings, removed
             elif action == 'add':
                 if any(b['offer_id'] == offer_id for b in draft.removed):
-                    raise ValueError('Оффер в Removed: используйте Bring Back (Вернуть)')
+                    raise ValueError('The offer is in Removed; use Bring Back')
                 if any(b['offer_id'] == offer_id for b in draft.bindings):
-                    raise ValueError('Оффер уже есть в потоке, включая disabled')
+                    raise ValueError('The offer is already in the stream, including disabled offers')
                 if offer_id not in catalogue:
-                    raise ValueError('Оффер недоступен в каталоге')
+                    raise ValueError('Offer is unavailable in the catalog')
                 bindings = draft.bindings + [dict(offer_id=offer_id, share=0, state='active', pinned=False)]
                 draft.bindings = edit_binding(bindings, offer_id, 'unpin')
             else:
                 draft.bindings = edit_binding(draft.bindings, offer_id, action, share)
+                # JSON booleans compare equal to integers in Python, but must persist as distinct values.
+                flag_modified(draft, 'bindings')
             draft.version += 1
             return {'version': draft.version, 'base': draft.base, 'bindings': draft.bindings, 'removed': draft.removed, 'notices': draft.notices}
 
     def cancel(self, campaign_id, stream_id, version, offers):
-        from app.editor import same_bindings
-
         with Session(self.engine) as session, session.begin():
             session.connection().exec_driver_sql('BEGIN IMMEDIATE')
             draft = session.scalar(select(Draft).where(
                 Draft.stream_id == stream_id, Draft.campaign_id == campaign_id))
             if draft is None:
-                raise LookupError('Сначала загрузите черновик потока')
+                raise LookupError('Load the stream draft first')
             self.check_draft(session, draft, version)
+            self._accept_remote(draft, offers)
+            # Acceptance resolves a finished publication's notice, not its durable record.
+            draft.publication_id = None
+            draft.version += 1
+            return {'version': draft.version, 'base': draft.base, 'bindings': draft.bindings, 'removed': draft.removed, 'notices': draft.notices}
+
+    @staticmethod
+    def _accept_remote(draft, offers):
+            from app.editor import same_bindings
+
             previous = {b['offer_id']: b for b in draft.base}
             latest = {b['offer_id']: b for b in offers}
             changed = {offer_id for offer_id, binding in previous.items()
                        if offer_id not in latest or not same_bindings([binding], [latest[offer_id]])}
             pinned = set(draft.confirmed_pins)
             visible_pins = pinned | {b['offer_id'] for b in draft.bindings + draft.removed if b['pinned']}
-            draft.notices = [f'Pin оффера {offer_id} снят: доля или статус изменились в Keitaro либо привязка исчезла.'
+            draft.notices = [f'Offer {offer_id} was unpinned: its share or status changed in Keitaro, or the binding no longer exists.'
                              for offer_id in sorted(changed & visible_pins)]
             pinned -= changed
             draft.confirmed_pins = sorted(pinned & latest.keys())
@@ -149,21 +174,21 @@ class DraftStore:
             # SQLAlchemy's JSON equality otherwise treats True and 1 as unchanged.
             flag_modified(draft, 'base')
             flag_modified(draft, 'bindings')
-            # Remote bindings win over confirmed Removed. External removals are not added.
-            draft.confirmed_removed = [b for b in draft.confirmed_removed if b['offer_id'] not in latest]
-            draft.removed = deepcopy(draft.confirmed_removed)
-            # Acceptance resolves a finished publication's notice, not its durable record.
-            draft.publication_id = None
-            draft.version += 1
-            return {'version': draft.version, 'base': draft.base, 'bindings': draft.bindings, 'removed': draft.removed, 'notices': draft.notices}
+            # Keep published removals and remember bindings removed outside the editor.
+            removed = [b for b in draft.confirmed_removed if b['offer_id'] not in latest]
+            known = {b['offer_id'] for b in removed}
+            removed.extend(dict(b, pinned=False) for b in previous.values()
+                           if b['offer_id'] not in latest and b['offer_id'] not in known)
+            draft.confirmed_removed = deepcopy(removed)
+            draft.removed = deepcopy(removed)
 
     @staticmethod
     def check_draft(session, draft, version):
         if draft.version != version:
-            raise RuntimeError('Черновик изменён в другой вкладке. Перечитайте потоки.')
+            raise RuntimeError('The draft changed in another tab. Reload the streams.')
         operation = session.get(Publication, draft.publication_id) if draft.publication_id else None
         if operation and operation.unfinished:
-            raise RuntimeError('Результат публикации не установлен. Проверьте результат; изменения заблокированы.')
+            raise RuntimeError('The publication outcome is unknown. Check the result; changes are blocked.')
 
     @staticmethod
     def publication_data(operation):
@@ -176,7 +201,7 @@ class DraftStore:
         with Session(self.engine) as session:
             draft = session.get(Draft, stream_id)
             if draft is None or draft.campaign_id != campaign_id:
-                raise LookupError('Сначала загрузите черновик потока')
+                raise LookupError('Load the stream draft first')
             return self.publication_data(session.get(Publication, draft.publication_id)) if draft.publication_id else None
 
     def prepare_publication(self, campaign_id, stream_id, version, offers, catalogue):
@@ -186,16 +211,16 @@ class DraftStore:
             session.connection().exec_driver_sql('BEGIN IMMEDIATE')
             draft = session.get(Draft, stream_id)
             if draft is None or draft.campaign_id != campaign_id:
-                raise LookupError('Сначала загрузите черновик потока')
+                raise LookupError('Load the stream draft first')
             self.check_draft(session, draft, version)
             sent = [{k: b[k] for k in ('offer_id', 'share', 'state')} for b in draft.bindings]
             if not same_bindings(draft.base, offers):
-                raise RuntimeError('Конфликт: Keitaro изменился относительно базы. Отбросьте черновик и загрузите актуальное.')
+                raise RuntimeError('Conflict: Keitaro has changed since the baseline. Discard the draft and load the current state.')
             errors = validation_errors(sent)
             if errors:
                 raise ValueError(errors[0])
             if any(b['offer_id'] not in catalogue for b in sent):
-                raise ValueError('Оффер итогового набора недоступен в каталоге')
+                raise ValueError('An offer in the final set is unavailable in the catalog')
             operation = Publication(id=uuid4().hex, stream_id=stream_id, campaign_id=campaign_id,
                                     base=deepcopy(draft.base), sent=sent, status='unknown',
                                     completed=False, unfinished=True)
@@ -215,7 +240,7 @@ class DraftStore:
             session.connection().exec_driver_sql('BEGIN IMMEDIATE')
             draft = session.get(Draft, stream_id)
             if draft is None or draft.campaign_id != campaign_id or draft.publication_id != operation_id:
-                raise RuntimeError('Публикация изменилась. Перечитайте потоки.')
+                raise RuntimeError('The publication changed. Reload the streams.')
             operation = session.get(Publication, operation_id)
             if not operation.unfinished:
                 return self.publication_data(operation)
@@ -245,7 +270,7 @@ class DraftStore:
             ).on_conflict_do_nothing(index_elements=['id']))
             operation = session.get(Creation, operation_id)
             if operation.inputs != inputs:
-                raise RuntimeError('Операция уже сохранена с другими входными данными')
+                raise RuntimeError('The operation was already saved with different inputs')
             return self.creation_data(operation)
 
     @staticmethod
@@ -262,7 +287,7 @@ class DraftStore:
         with Session(self.engine) as session:
             operation = session.get(Creation, operation_id)
             if operation is None:
-                raise LookupError('Операция не найдена')
+                raise LookupError('Operation not found')
             return self.creation_data(operation)
 
     def save_creation(self, operation):

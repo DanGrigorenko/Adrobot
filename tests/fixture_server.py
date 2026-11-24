@@ -32,8 +32,11 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == '/admin_api/v1/campaigns':
             created_campaigns.append(dict(json.loads(raw), id=100))
             writes.append('campaign')
-        elif self.path == '/admin_api/v1/campaigns/100/streams':
-            stream = dict(json.loads(raw), id=200 + len(created_streams))
+        elif self.path == '/admin_api/v1/streams':
+            payload = json.loads(raw)
+            if payload.get('campaign_id') != 100 or not payload.get('name'):
+                return self.send_json({'error': 'campaign_id and name required'}, 400)
+            stream = dict(payload, id=200 + len(created_streams))
             created_streams.append(stream)
             writes.append(stream['type'])
             if mode == 'lose-regular' and stream['type'] == 'regular':

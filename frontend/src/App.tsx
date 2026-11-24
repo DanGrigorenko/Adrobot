@@ -1,5 +1,4 @@
 import { useEffect, useId, useRef, useState } from 'react';
-import type { FormEvent } from 'react';
 import { Creator } from './Creator';
 
 type Campaign = { id: number; name: string; keitaro_url: string };
@@ -15,46 +14,61 @@ type Stream = {
 
 async function read<T>(path: string, signal: AbortSignal): Promise<T> {
   const response = await fetch(path, { signal, headers: { Accept: 'application/json' } });
-  if (!response.ok) throw new Error('Не удалось прочитать данные. Проверьте подключение и настройки Keitaro на сервере, затем повторите запрос.');
+  if (!response.ok) throw new Error('Could not load data. Check the connection and server Keitaro settings, then try again.');
   return response.json();
 }
 
 function displayShare(value: unknown): string {
-  if (value === null || value === undefined) return 'Не задана';
+  if (value === null || value === undefined) return 'Not set';
   return `${JSON.stringify(value)}%`;
 }
 
 type EditAction = (action: 'share' | 'pin' | 'unpin' | 'add' | 'remove' | 'bring_back', offerId: number, share?: number) => void;
 
+function Icon({ name }: { name: 'pin' | 'trash' | 'check' }) {
+  return <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    {name === 'pin' ? <><path d="m16 3 5 5-4 1-3 5v3l-7-7h3l5-3 1-4Z" /><path d="m10 14-6 6" /></> : name === 'trash' ? <><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v5M14 11v5" /></> : <path d="m5 12 4 4L19 6" />}
+  </svg>;
+}
+
 function ShareInput({ binding, disabled, onEdit }: { binding: Binding; disabled: boolean; onEdit: EditAction }) {
   const id = useId();
   const [value, setValue] = useState(typeof binding.share === 'number' ? String(binding.share) : '');
   useEffect(() => setValue(typeof binding.share === 'number' ? String(binding.share) : ''), [binding.share]);
+  const invalid = typeof binding.share !== 'number' || !Number.isInteger(binding.share) || binding.share < 0 || binding.share > 100;
   return <form className="share-form" onSubmit={event => { event.preventDefault(); onEdit('share', binding.offer_id, Number(value)); }}>
-    <span>Сохранённая доля: {displayShare(binding.share)}</span>
-    <label className="sr-only" htmlFor={id}>Доля оффера {binding.offer_id}, %</label>
-    <input id={id} aria-label={`Доля оффера ${binding.offer_id}, %`} type="number" min="0" max="100" step="1" required value={value} disabled={disabled} onChange={event => setValue(event.target.value)} />
-    <button disabled={disabled} type="submit" aria-label={`Применить долю оффера ${binding.offer_id}`}>Применить</button>
+    <div className="share-controls">
+      <label className="sr-only" htmlFor={id}>Offer share {binding.offer_id}, %</label>
+      <div className="percent-input"><input id={id} aria-label={`Offer share ${binding.offer_id}, %`} aria-describedby={invalid ? `${id}-raw` : undefined} type="number" min="0" max="100" step="1" required value={value} disabled={disabled} onChange={event => setValue(event.target.value)} /><span aria-hidden="true">%</span></div>
+      <button className="icon-button apply-button" disabled={disabled} type="submit" aria-label={`Apply share for offer ${binding.offer_id}`} title="Apply share"><Icon name="check" /></button>
+    </div>
+    {invalid && <span className="raw-share" id={`${id}-raw`}>Saved: {displayShare(binding.share)}</span>}
   </form>;
 }
 
-function Bindings({ bindings, names, label, showPins, onEdit, busy = false }: {
-  bindings: Binding[]; names: Record<string, string>; label: string; showPins: boolean; onEdit?: EditAction; busy?: boolean;
+function Bindings({ bindings, names, label, showPins, onEdit, busy = false, base, removed = [], unavailable = {} }: {
+  bindings: Binding[]; names: Record<string, string>; label: string; showPins: boolean; onEdit?: EditAction; busy?: boolean; base?: Binding[]; removed?: Binding[]; unavailable?: Record<string, string>;
 }) {
-  if (!bindings.length) return <p className="empty-inline">В этом потоке нет привязок офферов.</p>;
+  if (!bindings.length && !removed.length) return <p className="empty-inline">This stream has no offer bindings.</p>;
   return <div className="table-scroll" tabIndex={0} role="region" aria-label={label}>
     <table>
       <caption className="sr-only">{label}</caption>
-      <thead><tr><th scope="col">Оффер</th><th scope="col">Доля</th><th scope="col">Статус</th>{showPins && <th scope="col">Закрепление (Pin)</th>}{onEdit && <th scope="col">Действие</th>}</tr></thead>
-      <tbody>{bindings.map((binding, index) => <tr key={`${binding.offer_id}-${index}`}>
-        <th scope="row"><span className="offer-name">{binding.name ?? names[String(binding.offer_id)] ?? 'Оффер недоступен в каталоге'}</span><span className="entity-id">ID {binding.offer_id}</span></th>
-        <td className="share">{onEdit && binding.state === 'active' ? <ShareInput binding={binding} disabled={busy} onEdit={onEdit} /> : displayShare(binding.share)}</td>
-        <td><span className={`binding-state ${binding.state === 'active' ? 'active' : ''}`}>
-          {binding.state === 'active' ? 'Активна' : binding.state === 'disabled' ? 'Отключена (disabled)' : `Неизвестный статус: ${binding.state}`}
-        </span></td>
-        {showPins && <td><span>{binding.pinned ? 'Закреплена' : 'Не закреплена'}</span>{onEdit && binding.state === 'active' && <button className="pin-button" disabled={busy} aria-pressed={Boolean(binding.pinned)} onClick={() => onEdit(binding.pinned ? 'unpin' : 'pin', binding.offer_id)}>{binding.pinned ? 'Открепить (Unpin)' : 'Закрепить (Pin)'}</button>}</td>}
-        {onEdit && <td><button disabled={busy} onClick={() => onEdit('remove', binding.offer_id)} aria-label={`Удалить оффер ${binding.offer_id}`}>Удалить (Remove)</button></td>}
-      </tr>)}</tbody>
+      <thead><tr><th scope="col">Offer</th><th scope="col">Share, %</th>{(showPins || onEdit) && <th scope="col" className="actions-heading"><span className="sr-only">Actions</span></th>}</tr></thead>
+      <tbody>{[...bindings.map(binding => ({ binding, removed: false })), ...removed.map(binding => ({ binding, removed: true }))].map(({ binding, removed: isRemoved }, index) => {
+        const original = base?.find(item => item.offer_id === binding.offer_id);
+        const changed = base && (!original || JSON.stringify(original.share) !== JSON.stringify(binding.share) || original.state !== binding.state);
+        return <tr key={`${binding.offer_id}-${index}`} className={isRemoved ? "binding-removed" : changed ? "binding-changed" : undefined}>
+        <th scope="row"><span className="offer-name">{binding.name ?? names[String(binding.offer_id)] ?? 'Offer unavailable in the catalog'}</span><span className="offer-meta"><span className="entity-id">ID {binding.offer_id}</span><span className={`binding-state ${binding.state === 'active' ? 'active' : ''}`}>
+          {isRemoved ? 'Removed' : binding.state === 'active' ? 'Active' : binding.state === 'disabled' ? 'Disabled' : `Unknown status: ${binding.state}`}
+        </span></span></th>
+        <td className="share">{onEdit && (isRemoved || binding.state === 'active') ? <ShareInput binding={isRemoved ? { ...binding, share: 0 } : binding} disabled={busy || isRemoved} onEdit={onEdit} /> : displayShare(isRemoved ? 0 : binding.share)}</td>
+        {(showPins || onEdit) && <td className="row-actions"><div>
+          {!isRemoved && showPins && (onEdit && binding.state === 'active' ? <button className="icon-button pin-button" disabled={busy} aria-label={`${binding.pinned ? 'Unpin' : 'Pin'} offer ${binding.offer_id}`} title={binding.pinned ? 'Unpin share and recalculate' : 'Pin current share'} aria-pressed={Boolean(binding.pinned)} onClick={() => onEdit(binding.pinned ? 'unpin' : 'pin', binding.offer_id)}><Icon name="pin" /></button> : <span className="pin-status" title={binding.pinned ? 'Share pinned' : 'Share not pinned'}><span className="sr-only">{binding.pinned ? 'Pinned' : 'Not pinned'}</span>{binding.pinned && <Icon name="pin" />}</span>)}
+          {isRemoved && onEdit && <button className="icon-button pin-button" disabled aria-label={`Pin offer ${binding.offer_id}`} title="Pin current share" aria-pressed={false}><Icon name="pin" /></button>}
+          {isRemoved && onEdit && <button disabled={busy || Boolean(unavailable[String(binding.offer_id)])} title={unavailable[String(binding.offer_id)] || undefined} onClick={() => onEdit('bring_back', binding.offer_id)} aria-label={`Restore offer ${binding.offer_id}`}>Restore</button>}
+          {!isRemoved && onEdit && <button className="icon-button delete-button" disabled={busy} onClick={() => onEdit('remove', binding.offer_id)} aria-label={`Remove offer ${binding.offer_id}`} title="Remove offer"><Icon name="trash" /></button>}
+        </div></td>}
+      </tr>})}</tbody>
     </table>
   </div>;
 }
@@ -62,33 +76,32 @@ function Bindings({ bindings, names, label, showPins, onEdit, busy = false }: {
 function OfferSearch({ draft, disabled, onEdit }: { draft: NonNullable<Stream['draft']>; disabled: boolean; onEdit: EditAction }) {
   const id = useId();
   const [input, setInput] = useState('');
-  const [query, setQuery] = useState<string | null>(null);
-  const [attempt, setAttempt] = useState(0);
   const [results, setResults] = useState<{ id: number; name: string }[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   useEffect(() => {
-    if (query === null) return;
+    const query = input.trim();
+    if (!query) { setLoading(false); return; }
     const controller = new AbortController();
     setLoading(true); setError('');
-    read<{ id: number; name: string }[]>(`/api/offers?q=${encodeURIComponent(query)}`, controller.signal)
-      .then(setResults)
-      .catch((failure: Error) => { if (!controller.signal.aborted) setError(failure.message); })
-      .finally(() => { if (!controller.signal.aborted) setLoading(false); });
-    return () => controller.abort();
-  }, [query, attempt]);
+    const timer = window.setTimeout(() => {
+      read<{ id: number; name: string }[]>(`/api/offers?q=${encodeURIComponent(query)}`, controller.signal)
+        .then(setResults)
+        .catch((failure: Error) => { if (!controller.signal.aborted) setError(failure.message); })
+        .finally(() => { if (!controller.signal.aborted) setLoading(false); });
+    }, 200);
+    return () => { window.clearTimeout(timer); controller.abort(); };
+  }, [input]);
   return <div className="offer-search">
-    <form onSubmit={event => { event.preventDefault(); setQuery(input.trim()); setAttempt(n => n + 1); }}>
-      <label htmlFor={id}>Добавить существующий оффер — название или точный ID</label>
-      <div className="search-controls"><input id={id} type="search" value={input} onChange={event => setInput(event.target.value)} /><button disabled={disabled || loading}>Найти оффер</button></div>
-    </form>
-    {loading && <p role="status">Поиск офферов…</p>}
-    {error && <p role="alert">{error} Повторите поиск.</p>}
-    {query !== null && !loading && !error && <><p role="status">{results.length ? `Найдено офферов: ${results.length}` : 'Офферы не найдены. Измените название или ID.'}</p>
+    <label htmlFor={id}>Add offer</label>
+    <div className="search-controls"><input id={id} type="search" placeholder="Name or beginning of ID" value={input} onChange={event => { setResults([]); setError(''); setInput(event.target.value); }} /></div>
+    {input.trim() && loading && <p role="status">Searching offers…</p>}
+    {input.trim() && error && <p role="alert">{error} Change your query to search again.</p>}
+    {input.trim() && !loading && !error && <><p role="status">{results.length ? `Offers found: ${results.length}` : 'No offers found. Change the name or ID.'}</p>
       <ul className="offer-results">{results.map(offer => {
         const exists = draft.bindings.some(b => b.offer_id === offer.id);
         const removed = draft.removed.some(b => b.offer_id === offer.id);
-        return <li key={offer.id}><span>{offer.name} <span className="entity-id">ID {offer.id}</span></span><button disabled={disabled || exists} onClick={() => onEdit(removed ? 'bring_back' : 'add', offer.id)}>{exists ? 'Уже в потоке (включая disabled)' : removed ? 'Вернуть (Bring Back)' : 'Добавить (Add)'}</button></li>;
+        return <li key={offer.id}><span>{offer.name} <span className="entity-id">ID {offer.id}</span></span><button disabled={disabled || exists} onClick={() => onEdit(removed ? 'bring_back' : 'add', offer.id)}>{exists ? 'Already in stream (including disabled)' : removed ? 'Restore (Bring Back)' : 'Add'}</button></li>;
       })}</ul></>}
   </div>;
 }
@@ -97,100 +110,92 @@ function StreamPanel({ stream: loaded, campaignId, onRefresh, disabled }: { stre
   const [stream, setStream] = useState(loaded);
   useEffect(() => setStream(previous => (loaded.draft?.version ?? 0) >= (previous.draft?.version ?? 0) ? loaded : previous), [loaded]);
   const [busy, setBusy] = useState(false);
-  const [message, setMessage] = useState('');
+  const [confirmCancel, setConfirmCancel] = useState(false);
   const [error, setError] = useState('');
   const inFlight = useRef(false);
   async function edit(action: 'share' | 'pin' | 'unpin' | 'add' | 'remove' | 'bring_back', offerId: number, share?: number) {
     if (!stream.draft || !stream.editable || stream.publication?.locked || disabled || inFlight.current) return;
     inFlight.current = true;
-    setBusy(true); setError(''); setMessage('');
+    setBusy(true); setError('');
     try {
       const response = await fetch(`/api/campaigns/${campaignId}/streams/${stream.id}/actions`, {
         method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Adrobot-Request': '1' },
         body: JSON.stringify({ version: stream.draft.version, action, offer_id: offerId, ...(action === 'share' ? { share } : {}) }),
       });
       const data = await response.json();
-      if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : 'Недопустимое действие. Перечитайте потоки и проверьте введённые данные.');
-      setMessage('Черновик сохранён. Keitaro не изменён.');
+      if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : 'Invalid action. Reload the streams and check your input.');
       onRefresh();
-    } catch (failure) { setError(failure instanceof Error ? failure.message : 'Не удалось сохранить. Обновите потоки перед повтором.'); }
+    } catch (failure) { setError(failure instanceof Error ? failure.message : 'Could not save. Refresh the streams before trying again.'); }
     finally { setBusy(false); inFlight.current = false; }
   }
   async function cancelDraft() {
     if (!stream.draft || !stream.editable || stream.publication?.locked || disabled || inFlight.current) return;
-    if (!window.confirm('Отбросить неопубликованные изменения этого потока и загрузить актуальное состояние Keitaro? Изменения долей, Remove/Bring Back и неподтверждённые Pin будут отменены. Keitaro не изменится.')) return;
+    setConfirmCancel(false);
     inFlight.current = true;
-    setBusy(true); setError(''); setMessage('');
+    setBusy(true); setError('');
     try {
       const response = await fetch(`/api/campaigns/${campaignId}/streams/${stream.id}/cancel`, {
         method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Adrobot-Request': '1' },
         body: JSON.stringify({ version: stream.draft.version, confirmed: true }),
       });
       const data = await response.json();
-      if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : 'Не удалось отменить изменения. Перечитайте потоки.');
-      setMessage('Неопубликованные изменения отброшены. Загружено актуальное состояние; Keitaro не изменён.');
+      if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : 'Could not discard changes. Reload the streams.');
       onRefresh();
-    } catch (failure) { setError(failure instanceof Error ? failure.message : 'Не удалось прочитать Keitaro. Перечитайте потоки: результат отмены не подтверждён.'); }
+    } catch (failure) { setError(failure instanceof Error ? failure.message : 'Could not read Keitaro. Reload the streams; discarding changes was not confirmed.'); }
     finally { setBusy(false); inFlight.current = false; }
   }
   async function publication(check: boolean) {
     if (!stream.draft || inFlight.current) return;
     if (!check && (disabled || !stream.editable || stream.publication?.locked)) return;
-    if (!check && !window.confirm('Опубликовать только привязки офферов этого потока в Keitaro? Cancel не отменяет публикацию. Полная защита от параллельных внешних изменений не гарантируется.')) return;
+    if (!check && !window.confirm('Publish only this stream’s offer bindings to Keitaro? Cancel does not undo publication. Full protection against concurrent external changes is not guaranteed.')) return;
     inFlight.current = true;
-    setBusy(true); setError(''); setMessage('');
+    setBusy(true); setError('');
     try {
       const response = await fetch(`/api/campaigns/${campaignId}/streams/${stream.id}/${check ? 'check-publication' : 'push'}`, {
         method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Adrobot-Request': '1' },
         body: JSON.stringify({ version: stream.draft.version }),
       });
       const data = await response.json();
-      if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : 'Перечитайте потоки перед следующим действием.');
+      if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : 'Reload the streams before the next action.');
       setStream(previous => ({ ...previous, draft: data.draft, publication: data.publication }));
     } catch (failure) {
-      setError(failure instanceof TypeError || !(failure instanceof Error) ? 'Ответ приложения потерян. Результат публикации не установлен. Перечитайте сохранённую операцию; не повторяйте Push вслепую.' : failure.message);
+      setError(failure instanceof TypeError || !(failure instanceof Error) ? 'The application response was lost. The publication result is unknown. Recheck the saved operation; do not retry Push blindly.' : failure.message);
     } finally {
       setBusy(false); inFlight.current = false; onRefresh();
     }
   }
   const blocked = busy || disabled || !stream.editable || Boolean(stream.publication?.locked);
-  const type = stream.type === 'regular' ? 'Обычный (Regular)' : stream.type === 'default' ? 'По умолчанию (Default)' : stream.type;
+  const type = stream.type === 'regular' ? 'Regular' : stream.type === 'default' ? 'Default' : stream.type;
+  if (!stream.offers.length && !stream.draft && !stream.publication && !stream.conflict) return <section className="stream" aria-label={stream.name || `Stream ${stream.id}`}>
+    <div className="stream-heading"><div><h3>{stream.name || `Stream ${stream.id}`}</h3><p className="stream-meta">ID {stream.id} · {type}</p></div><span className="mode-label">No offers</span></div>
+  </section>;
   return <section className="stream" aria-labelledby={`stream-${stream.id}`}>
     <div className="stream-heading">
-      <div><h3 id={`stream-${stream.id}`}>{stream.name || `Поток ${stream.id}`}</h3><p className="stream-meta">ID {stream.id} · {type} · Схема: {stream.schema}</p></div>
-      <span className="mode-label">{stream.editable ? 'Распределение офферов' : 'Только просмотр'}</span>
+      <div><h3 id={`stream-${stream.id}`}>{stream.name || `Stream ${stream.id}`}</h3><p className="stream-meta">ID {stream.id} · {type} · Schema: {stream.schema}</p></div>
+      <span className="mode-label">{stream.editable ? 'Offer distribution' : 'Read only'}</span>
     </div>
     {stream.draft ? <>
-      <p className="draft-note">Черновик сохранён · Версия {stream.draft.version}</p>
-      <div className="draft-note"><button disabled={blocked || stream.conflict || stream.validation_errors.length > 0} onClick={() => publication(false)}>Опубликовать поток (Push)</button><p>Перечитываем поток и каталог, отправляем только offers и подтверждаем результат чтением.</p></div>
-      {stream.publication && <div className={`notice ${stream.publication.status === 'succeeded' ? '' : 'warning'}`} role="status">
-        <strong>{stream.publication.status === 'succeeded' ? 'Публикация подтверждена чтением Keitaro.' : stream.publication.status === 'not_applied' ? 'Публикация не применена: подтверждено прежнее состояние, предыдущий запрос завершён.' : stream.publication.status === 'conflict' ? 'Конфликт: Keitaro не совпадает ни с базой, ни с отправленным состоянием.' : 'Результат публикации не установлен.'}</strong>
-        {stream.publication.locked ? <><p>Изменения, Cancel и новый Push заблокированы. Проверка только читает Keitaro; перезапуск не повторяет запись.</p><button disabled={busy} onClick={() => publication(true)}>Проверить результат</button>{!stream.publication.completed && <p>Предыдущая запись ещё может выполняться. Таймаут и одно чтение прежней базы не доказывают завершение; автоматической разблокировки нет.</p>}</> : stream.publication.status === 'not_applied' ? <p>Черновик сохранён. Возможен только явный новый Push с обычными проверками.</p> : stream.publication.status === 'conflict' ? <p>Отбросьте черновик и загрузите актуальное. Принудительной перезаписи нет.</p> : <p>Pin и история Removed подтверждены. Cancel не отменяет опубликованное.</p>}
+      <div className="stream-toolbar"><span className="draft-status">Draft · v{stream.draft.version}</span><div className="stream-actions"><button disabled={blocked || confirmCancel} onClick={() => setConfirmCancel(true)}>Cancel</button><button className="primary-button" disabled={blocked || stream.conflict || stream.validation_errors.length > 0} onClick={() => publication(false)}>Publish stream</button></div></div>
+      {confirmCancel && <div className="discard-confirmation" role="group" aria-label="Confirm discarding changes" onKeyDown={event => { if (event.key === 'Escape') setConfirmCancel(false); }}>
+        <div><strong>Discard changes?</strong><p>Unpublished edits will be replaced with the current Keitaro state. Keitaro will not be changed.</p></div>
+        <div className="stream-actions"><button onClick={() => setConfirmCancel(false)}>Keep editing</button><button className="discard-button" disabled={blocked} onClick={() => void cancelDraft()}>Discard changes</button></div>
       </div>}
-      {!stream.editable && <p className="readonly-note" role="status">{stream.read_only_reason}. Локальные изменения сохранены; действия заблокированы.</p>}
-      <div className="draft-note"><button disabled={blocked} onClick={cancelDraft}>{stream.conflict ? 'Отбросить черновик и загрузить актуальное' : 'Отменить изменения (Cancel)'}</button><p>Потребуется подтверждение. Сначала читаем Keitaro; при ошибке чтения черновик сохраняется.</p></div>
+      {stream.publication && stream.publication.status !== 'succeeded' && <div className="notice warning" role="status">
+        <strong>{stream.publication.status === 'not_applied' ? 'Publication was not applied: the previous state was confirmed and the previous request has completed.' : stream.publication.status === 'conflict' ? 'Conflict: Keitaro matches neither the baseline nor the submitted state.' : 'Publication result is unknown.'}</strong>
+        {stream.publication.locked ? <><p>Edits, Cancel, and a new Push are blocked. Checking only reads Keitaro; restarting does not repeat the write.</p><button disabled={busy} onClick={() => publication(true)}>Check result</button>{!stream.publication.completed && <p>The previous write may still be running. A timeout and a single read of the previous baseline do not prove completion; there is no automatic unlock.</p>}</> : stream.publication.status === 'not_applied' ? <p>The draft is saved. Only an explicit new Push with the usual checks is possible.</p> : stream.publication.status === 'conflict' ? <p>Discard the draft and load the current state. Force overwrite is not available.</p> : <p>Pins and removal history are confirmed. Cancel does not undo published changes.</p>}
+      </div>}
+      {!stream.editable && <p className="readonly-note" role="status">{stream.read_only_reason}. Local changes are saved; actions are blocked.</p>}
       {stream.draft.notices.length > 0 && <div className="notice warning" role="status"><ul>{stream.draft.notices.map(notice => <li key={notice}>{notice}</li>)}</ul></div>}
-      {stream.conflict && !stream.publication?.locked && <div className="notice warning" role="status"><strong>Keitaro изменился относительно базы.</strong><p>Черновик и его база сохранены без изменений. Публикация заблокирована до разрешения конфликта.</p></div>}
-      {stream.validation_errors.length > 0 && <div className="notice warning"><strong>Доли требуют исправления перед публикацией</strong><ul>{stream.validation_errors.map(error => <li key={error}>{error}</li>)}</ul><p>Исходные значения показаны без округления и перераспределения.</p></div>}
-      <p className="draft-note">Целые проценты 0–100. «Применить» закрепляет долю и распределяет остаток; Unpin пересчитывает. Pin сохраняет текущую долю.</p>
-      {busy && <p className="draft-note" role="status">Выполняется действие… Ожидайте подтверждения.</p>}
-      {message && <p className="draft-note" role="status">{message}</p>}
-      {error && <div className="notice error" role="alert">{error} <button onClick={onRefresh}>Перечитать потоки</button></div>}
-      <Bindings bindings={stream.draft.bindings} names={stream.offer_names} label={`Черновик потока ${stream.id}`} showPins onEdit={stream.editable ? edit : undefined} busy={blocked} />
+      {(stream.conflict || stream.publication?.status === 'conflict') && !stream.publication?.locked && <div className="notice warning" role="status"><strong>Keitaro has changed since the baseline.</strong><p>To discard the draft and load the current state, select Cancel.</p></div>}
+      {stream.validation_errors.length > 0 && <div className="notice warning"><strong>Shares must be corrected before publishing</strong><ul>{stream.validation_errors.map(error => <li key={error}>{error}</li>)}</ul><p>Original values are shown without rounding or redistribution.</p></div>}
+      {busy && <p className="draft-note" role="status">Action in progress… Wait for confirmation.</p>}
+      {error && <div className="notice error" role="alert">{error} <button onClick={onRefresh}>Reload streams</button></div>}
+      <Bindings bindings={stream.draft.bindings} names={stream.offer_names} label={`Draft for stream ${stream.id}`} showPins onEdit={stream.editable ? edit : undefined} busy={blocked} base={stream.draft.base} removed={stream.draft.removed} unavailable={stream.unavailable_offers} />
       {stream.editable && <OfferSearch draft={stream.draft} disabled={blocked} onEdit={edit} />}
-      <details className="comparison removed-history">
-        <summary>Удалённые (Removed) · {stream.draft.removed.length}</summary>
-        <p className="history-note">Прежние доля, статус и Pin сохранены. Раскрытие и скрытие не изменяют черновик.</p>
-        {stream.draft.removed.length ? <ul className="offer-results">{stream.draft.removed.map(binding => <li key={binding.offer_id}>
-          <div><strong>{stream.offer_names[String(binding.offer_id)]}</strong><span className="entity-id">ID {binding.offer_id}</span><p>{displayShare(binding.share)} · {binding.state === 'disabled' ? 'Отключена (disabled)' : 'Активна'} · {binding.pinned ? 'Закреплена (Pin)' : 'Не закреплена'}</p>
-            {stream.unavailable_offers[String(binding.offer_id)] && <p>{stream.unavailable_offers[String(binding.offer_id)]}</p>}</div>
-          <button disabled={blocked || Boolean(stream.unavailable_offers[String(binding.offer_id)])} onClick={() => edit('bring_back', binding.offer_id)} aria-label={`Вернуть оффер ${binding.offer_id}`}>Вернуть (Bring Back)</button>
-        </li>)}</ul> : <p className="history-note">Удалённых привязок пока нет.</p>}
-      </details>
-      {stream.conflict && <details className="comparison"><summary>Сравнить базу и текущее состояние Keitaro</summary><h4>База черновика</h4><Bindings bindings={stream.draft.base} names={stream.offer_names} label={`База потока ${stream.id}`} showPins={false} /><h4>Сейчас в Keitaro</h4><Bindings bindings={stream.offers} names={stream.offer_names} label={`Текущее состояние потока ${stream.id}`} showPins={false} /></details>}
+      {stream.conflict && <details className="comparison"><summary>Compare baseline with current Keitaro state</summary><h4>Draft baseline</h4><Bindings bindings={stream.draft.base} names={stream.offer_names} label={`Baseline for stream ${stream.id}`} showPins={false} /><h4>Current state in Keitaro</h4><Bindings bindings={stream.offers} names={stream.offer_names} label={`Current state of stream ${stream.id}`} showPins={false} /></details>}
     </> : <>
-      <p className="readonly-note">{stream.read_only_reason}. Черновик не создаётся; маршрутизация не меняется.</p>
-      <Bindings bindings={stream.offers} names={stream.offer_names} label={`Привязки потока ${stream.id}`} showPins={false} />
+      <p className="readonly-note">{stream.read_only_reason}. No draft is created; routing is unchanged.</p>
+      <Bindings bindings={stream.offers} names={stream.offer_names} label={`Bindings for stream ${stream.id}`} showPins={false} />
     </>}
   </section>;
 }
@@ -198,7 +203,6 @@ function StreamPanel({ stream: loaded, campaignId, onRefresh, disabled }: { stre
 export function App() {
   const [creatorOpen, setCreatorOpen] = useState(false);
   const [input, setInput] = useState('');
-  const [query, setQuery] = useState('');
   const [searchAttempt, setSearchAttempt] = useState(0);
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
   const [campaignLoading, setCampaignLoading] = useState(true);
@@ -216,7 +220,7 @@ export function App() {
     const controller = new AbortController();
     setCampaignLoading(true);
     setCampaignError('');
-    read<Campaign[]>(`/api/campaigns?q=${encodeURIComponent(query)}`, controller.signal)
+    read<Campaign[]>('/api/campaigns', controller.signal)
       .then(data => {
         setCampaigns(data);
         if (!restored.current) {
@@ -230,13 +234,13 @@ export function App() {
         setCampaignError(error.message);
         if (!restored.current) {
           const id = Number(new URLSearchParams(window.location.search).get('campaign'));
-          if (Number.isSafeInteger(id) && id > 0) setSelected({ id, name: `Кампания ${id} — сохранённые данные`, keitaro_url: '' });
+          if (Number.isSafeInteger(id) && id > 0) setSelected({ id, name: `Campaign ${id} — saved data`, keitaro_url: '' });
           restored.current = true;
         }
       })
       .finally(() => { if (!controller.signal.aborted) setCampaignLoading(false); });
     return () => controller.abort();
-  }, [query, searchAttempt]);
+  }, [searchAttempt]);
 
   useEffect(() => {
     if (!selected) return;
@@ -265,11 +269,9 @@ export function App() {
     return () => controller.abort();
   }, [selected?.id, refresh]);
 
-  function search(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    setQuery(input.trim());
-    setSearchAttempt(n => n + 1);
-  }
+  const query = input.trim().toLocaleLowerCase();
+  const matchingCampaigns = campaigns.filter(campaign =>
+    campaign.name.toLocaleLowerCase().includes(query) || String(campaign.id).startsWith(query));
 
   function choose(campaign: Campaign) {
     setCreatorOpen(false);
@@ -280,30 +282,29 @@ export function App() {
   }
 
   return <>
-    <a className="skip-link" href="#workspace">Перейти к потокам</a>
-    <header className="app-header"><span className="wordmark">Adrobot</span><span>Кампании Keitaro</span><span className="read-mode">Редактор черновиков</span></header>
+    <a className="skip-link" href="#workspace">Skip to streams</a>
+    <header className="app-header"><span className="wordmark">Adrobot</span><span>Offer editor</span><span className="read-mode">Keitaro</span></header>
     <div className="app-layout">
       <aside className="campaigns" aria-labelledby="campaigns-heading">
-        <h1 id="campaigns-heading">Кампании</h1>
-        <button className="creator-open" aria-pressed={creatorOpen} onClick={() => setCreatorOpen(open => !open)}>{creatorOpen ? 'Вернуться к потокам' : 'Новая кампания (Creator)'}</button>
-        <form onSubmit={search} role="search">
-          <label htmlFor="campaign-search">Название или точный ID</label>
-          <div className="search-controls"><input id="campaign-search" type="search" value={input} onChange={event => setInput(event.target.value)} placeholder="Найти кампанию" /><button type="submit" disabled={campaignLoading}>Найти</button></div>
-        </form>
+        <div className="campaign-picker-heading"><h1 id="campaigns-heading">Campaigns</h1><button className="creator-open" aria-pressed={creatorOpen} onClick={() => { if (creatorOpen) setSearchAttempt(n => n + 1); setCreatorOpen(open => !open); }}>{creatorOpen ? 'Back to editor' : 'New campaign'}</button></div>
+        <div role="search">
+          <label className="sr-only" htmlFor="campaign-search">Campaign name or beginning of ID</label>
+          <input id="campaign-search" type="search" value={input} onChange={event => setInput(event.target.value)} placeholder="Find a campaign" />
+        </div>
         <div className="campaign-results" aria-busy={campaignLoading}>
-          {campaignLoading && <p role="status" className="loading">Загрузка кампаний…</p>}
-          {campaignError ? <div className="notice error" role="alert"><p>{campaignError}</p><button onClick={() => setSearchAttempt(n => n + 1)}>Повторить поиск</button></div>
-            : !campaignLoading && <><p className="result-count" role="status">{campaigns.length ? `Найдено кампаний: ${campaigns.length}` : 'Кампании не найдены. Попробуйте другое название или ID.'}</p><ul className="campaign-list">{campaigns.map(c => <li key={c.id}><button className="campaign-button" aria-pressed={selected?.id === c.id} onClick={() => choose(c)}><span>{c.name || 'Без названия'}</span><span className="entity-id">ID {c.id}</span></button></li>)}</ul></>}
+          {campaignLoading && <p role="status" className="loading">Loading campaigns…</p>}
+          {campaignError ? <div className="notice error" role="alert"><p>{campaignError}</p><button onClick={() => setSearchAttempt(n => n + 1)}>Retry search</button></div>
+            : !campaignLoading && <><p className="result-count" role="status">{matchingCampaigns.length ? `Campaigns found: ${matchingCampaigns.length}` : 'No campaigns found. Try another name or ID.'}</p><ul className="campaign-list">{matchingCampaigns.map(c => <li key={c.id}><button className="campaign-button" aria-pressed={selected?.id === c.id} onClick={() => choose(c)}><span>{c.name || 'Untitled'}</span><span className="entity-id">ID {c.id}</span></button></li>)}</ul></>}
         </div>
       </aside>
       <main id="workspace" className="workspace" tabIndex={-1}>
-        {creatorOpen ? <Creator /> : !selected ? <div className="start-state"><h2>Выберите кампанию</h2><p>Найдите её по названию или точному ID, чтобы открыть потоки и привязки офферов.</p><p>При первом открытии поддерживаемого потока исходные доли сохраняются в локальный черновик. Повторное чтение его не заменяет.</p></div> : <>
-          <div className="workspace-heading"><div><h2>{selected.name || 'Без названия'}</h2><p className="campaign-meta">Кампания ID {selected.id}{syncedAt && ` · Прочитано в ${syncedAt}`}</p></div><div className="workspace-actions">{selected.keitaro_url && <a href={selected.keitaro_url} target="_blank" rel="noopener noreferrer">Открыть Keitaro <span className="sr-only">(в новой вкладке)</span></a>}<button onClick={() => setRefresh(n => n + 1)} disabled={streamLoading}>Обновить потоки</button></div></div>
-          <p className="scope-note">Правки сохраняются в локальном черновике. Только «Опубликовать поток (Push)» записывает привязки выбранного потока в Keitaro. Проверка результата — только чтение. Параллельные внешние изменения полностью не защищены.</p>
+        {creatorOpen ? <Creator onCampaignsChanged={() => setSearchAttempt(n => n + 1)} /> : !selected ? <div className="start-state"><h2>Select a campaign</h2><p>Find a campaign above to configure offer shares.</p></div> : <>
+          <div className="workspace-heading"><div><h2>{selected.name || 'Untitled'}</h2><p className="campaign-meta">Campaign ID {selected.id}{syncedAt && ` · Read at ${syncedAt}`}</p></div><div className="workspace-actions">{selected.keitaro_url && <a href={selected.keitaro_url} target="_blank" rel="noopener noreferrer">Open Keitaro <span className="sr-only">(opens in a new tab)</span></a>}<button onClick={() => setRefresh(n => n + 1)} disabled={streamLoading}>Fetch</button></div></div>
+
           <div aria-busy={streamLoading}>
-            {streamLoading && <p role="status" className="loading">Загрузка потоков… Черновики и база сохраняются.</p>}
-            {streamError && <div className="notice error" role="alert"><strong>Не удалось загрузить потоки</strong><p>{streamError}</p>{streams !== null && <p>Ниже показаны последние загруженные данные, они могут быть устаревшими.</p>}<button onClick={() => setRefresh(n => n + 1)}>Повторить загрузку</button></div>}
-            {streams !== null && (streams.length ? streams.map(stream => <StreamPanel key={`${selected.id}-${stream.id}`} stream={stream} campaignId={selected.id} onRefresh={() => setRefresh(n => n + 1)} disabled={streamLoading || Boolean(streamError)} />) : <div className="empty-streams"><h3>В кампании пока нет потоков</h3><p>Проверьте конфигурацию в Keitaro или обновите список позже.</p></div>)}
+            {streamLoading && <p role="status" className="loading">Loading streams… Drafts and baseline are preserved.</p>}
+            {streamError && <div className="notice error" role="alert"><strong>Could not load streams</strong><p>{streamError}</p>{streams !== null && <p>The last loaded data is shown below and may be out of date.</p>}<button onClick={() => setRefresh(n => n + 1)}>Retry loading</button></div>}
+            {streams !== null && (streams.length ? streams.map(stream => <StreamPanel key={`${selected.id}-${stream.id}`} stream={stream} campaignId={selected.id} onRefresh={() => setRefresh(n => n + 1)} disabled={streamLoading || Boolean(streamError)} />) : <div className="empty-streams"><h3>This campaign has no streams</h3><p>Refresh the list to check for changes.</p></div>)}
           </div>
         </>}
       </main>
