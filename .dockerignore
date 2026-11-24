@@ -1,0 +1,15 @@
+.git
+.claude
+.playwright-mcp
+.env
+.env.*
+.venv
+**/__pycache__
+.pytest_cache
+**/node_modules
+**/dist
+*.db
+*.db-*
+*.sqlite
+*.sqlite-*
+.impeccable
