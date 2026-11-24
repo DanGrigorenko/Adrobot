@@ -37,7 +37,7 @@ def test_packaged_ui_real_adapter_and_drafts_survive_container_recreation():
         with httpx.Client(base_url=app_url, timeout=10) as client:
             ui = client.get('/')
             assert ui.status_code == 200
-            assert '<html lang="ru">' in ui.text
+            assert '<html lang="en">' in ui.text
             assert '/assets/' in ui.text
             assets = re.findall(r'(?:src|href)="(/assets/[^\"]+)"', ui.text)
             assert assets
@@ -181,8 +181,8 @@ def test_packaged_ui_real_adapter_and_drafts_survive_container_recreation():
             accepted = client.post(cancel_path, headers=headers, json={'version': 5, 'confirmed': True})
             assert accepted.status_code == 200
             assert accepted.json()['bindings'] == [dict(offer_id=9, share=100, state='active', pinned=False)]
-            assert accepted.json()['removed'] == []
-            assert accepted.json()['notices']
+            assert accepted.json()['removed'] == [dict(offer_id=10, share=30, state='active', pinned=False)]
+            assert accepted.json()['notices'] == []
             assert client.get('/api/campaigns/12/streams').json()[0]['conflict'] is False
             run('up', '-d', '--force-recreate', 'app')
             wait_ready()

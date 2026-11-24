@@ -5,7 +5,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.main import create_app
-from tests.test_refresh_cancel import Keitaro, HEADERS, STREAMS, ACTIONS, CANCEL, current, action, cancel
+from tests.test_refresh_cancel import Keitaro, HEADERS, STREAMS, current, action, cancel
 
 PUSH = STREAMS + '/7/push'
 CHECK = STREAMS + '/7/check-publication'
