@@ -1,9 +1,34 @@
 from contextlib import ExitStack
+import json
 
+import httpx
 from fastapi.testclient import TestClient
 import pytest
 
 from app.main import create_app
+from app.keitaro import HttpKeitaro
+
+
+def test_create_stream_posts_campaign_id_in_json():
+    requests = []
+
+    def handle(request):
+        requests.append(request)
+        return httpx.Response(200, json={})
+
+    remote = HttpKeitaro('https://keitaro.example', 'secret')
+    remote._http.close()
+    remote._http = httpx.Client(base_url='https://keitaro.example/admin_api/v1/', transport=httpx.MockTransport(handle))
+    payload = {'name': 'Default', 'campaign_id': 999, 'type': 'default'}
+    try:
+        remote.create_stream(12, payload)
+    finally:
+        remote.close()
+    assert len(requests) == 1
+    assert requests[0].method == 'POST'
+    assert requests[0].url.path == '/admin_api/v1/streams'
+    assert json.loads(requests[0].content) == {'name': 'Default', 'campaign_id': 12, 'type': 'default'}
+    assert payload['campaign_id'] == 999
 
 
 class KeitaroStub:
@@ -36,6 +61,7 @@ def test_campaign_streams_can_be_opened(client_factory):
 
     response = client_factory(StreamsKeitaro()).get('/api/campaigns/12/streams')
     assert response.status_code == 200
+    assert response.json()[0]['keitaro_url'] == 'https://keitaro.example/admin/#!/campaign.editor/12'
     assert [{k: b[k] for k in ('offer_id', 'share', 'state')} for b in response.json()[0]['offers']] == [
         {'offer_id': 9, 'share': 70, 'state': 'active'},
         {'offer_id': 10, 'share': 30, 'state': 'disabled'},
@@ -44,7 +70,7 @@ def test_campaign_streams_can_be_opened(client_factory):
 
 def test_campaign_search_matches_name_or_exact_id(client_factory):
     client = client_factory(KeitaroStub())
-    expected = [{'id': 12, 'name': 'Summer sale', 'keitaro_url': 'https://keitaro.example/admin/#!/campaigns/12'}]
+    expected = [{'id': 12, 'name': 'Summer sale', 'keitaro_url': 'https://keitaro.example/admin/#!/campaign.editor/12'}]
     assert client.get('/api/campaigns', params={'q': 'SUMMER'}).json() == expected
     assert client.get('/api/campaigns', params={'q': ' 12 '}).json() == expected
     assert client.get('/api/campaigns', params={'q': 'missing'}).json() == []

@@ -61,7 +61,7 @@ def validate_base_url(value):
     parsed = urlsplit(value)
     if (parsed.scheme not in ('http', 'https') or not parsed.hostname
             or parsed.username or parsed.password or parsed.query or parsed.fragment):
-        raise ValueError('KEITARO_BASE_URL должен быть HTTP(S) адресом без секрета, query и fragment')
+        raise ValueError('KEITARO_BASE_URL must be an HTTP(S) URL without credentials, a query, or a fragment')
     return value.rstrip('/')
 
 
@@ -69,7 +69,7 @@ class HttpKeitaro:
     def __init__(self, base_url, api_key):
         self.base_url = validate_base_url(base_url)
         if not api_key or api_key.strip() != api_key:
-            raise ValueError('Задайте KEITARO_API_KEY на сервере')
+            raise ValueError('Set KEITARO_API_KEY on the server')
         self._http = httpx.Client(
             base_url=self.base_url + '/admin_api/v1/',
             headers={'Api-Key': api_key, 'Accept': 'application/json'},
@@ -86,7 +86,7 @@ class HttpKeitaro:
             return [schema.model_validate(item).model_dump(by_alias=True) for item in data]
         except (httpx.HTTPError, ValueError, ValidationError):
             # Never expose upstream bodies, request headers, URLs or key in errors.
-            raise ConnectionError('Keitaro недоступен или вернул некорректный ответ') from None
+            raise ConnectionError('Keitaro is unavailable or returned an invalid response') from None
 
     def campaigns(self):
         results = []
@@ -98,7 +98,7 @@ class HttpKeitaro:
             ids = {c['id'] for c in page}
             # Fail closed on broken pagination rather than loop or silently omit campaigns.
             if ids & seen or len(ids) != len(page):
-                raise ConnectionError('Некорректная пагинация Keitaro')
+                raise ConnectionError('Invalid pagination from Keitaro')
             seen.update(ids)
             results.extend(page)
 
@@ -123,7 +123,7 @@ class HttpKeitaro:
             response.raise_for_status()
             return Campaign.model_validate(response.json()).model_dump()
         except (httpx.HTTPError, ValueError, ValidationError):
-            raise ConnectionError('Не удалось проверить кампанию в Keitaro') from None
+            raise ConnectionError('Could not verify the campaign in Keitaro') from None
 
     def _post(self, path, **kwargs):
         try:
@@ -131,13 +131,13 @@ class HttpKeitaro:
             response.raise_for_status()
         except httpx.HTTPError:
             # Even an error status does not prove that a write was not applied.
-            raise ConnectionError('Исход записи Keitaro не подтверждён') from None
+            raise ConnectionError('The outcome of the Keitaro write could not be confirmed') from None
 
     def create_campaign(self, payload):
         self._post('campaigns', json=payload)
 
     def create_stream(self, campaign_id, payload):
-        self._post(f'campaigns/{campaign_id}/streams', json=payload)
+        self._post('streams', json={**payload, 'campaign_id': campaign_id})
 
     def enable_campaign(self, campaign_id):
         self._post(f'campaigns/{campaign_id}/enable')
@@ -148,7 +148,7 @@ class HttpKeitaro:
             response.raise_for_status()
         except httpx.HTTPError:
             # No retry: even an error response may follow a partially applied write.
-            raise ConnectionError('Исход публикации Keitaro не подтверждён') from None
+            raise ConnectionError('The outcome of the Keitaro publication could not be confirmed') from None
 
     def close(self):
         self._http.close()

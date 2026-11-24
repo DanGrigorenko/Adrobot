@@ -95,7 +95,7 @@ def test_packaged_ui_real_adapter_and_drafts_survive_container_recreation():
             assert client.get('/api/creator/operations').json() == [unknown]
             completed = client.post(creation_path, headers=headers).json()
             assert completed['status'] == 'succeeded', completed
-            assert completed['keitaro_url'].endswith('/campaigns/100')
+            assert completed['keitaro_url'] == 'http://fixture:8081/admin/#!/campaign.editor/100'
             assert client.post(creation_path, headers=headers).json() == completed
             evidence = httpx.get(f'{fixture_url}/control').json()
             assert evidence['writes'] == ['campaign', 'regular', 'default', 'enable']
@@ -132,7 +132,7 @@ def test_packaged_ui_real_adapter_and_drafts_survive_container_recreation():
             streams = client.get('/api/campaigns/12/streams').json()
             assert streams[0]['offers'][0]['name'] == 'Оффер А'
             assert streams[0]['draft']['base'][0]['share'] == 70
-            assert streams[0]['keitaro_url'] == 'http://fixture:8081/admin/#!/campaigns/12'
+            assert streams[0]['keitaro_url'] == 'http://fixture:8081/admin/#!/campaign.editor/12'
             assert streams[1]['draft'] is None
             assert streams[1]['editable'] is False
             path = f"/api/campaigns/12/streams/{streams[0]['id']}/actions"
@@ -145,7 +145,7 @@ def test_packaged_ui_real_adapter_and_drafts_survive_container_recreation():
             assert saved.status_code == 200
             draft = saved.json()
             assert draft['version'] == 2
-            assert [(b['share'], b['pinned']) for b in draft['bindings']] == [(50, True), (50, False)]
+            assert [(b['share'], b['pinned']) for b in draft['bindings']] == [(50, False), (50, False)]
             assert client.post(path, headers=headers, json={
                 'version': 1, 'action': 'share', 'offer_id': offer_id, 'share': 40,
             }).status_code == 409
@@ -153,11 +153,11 @@ def test_packaged_ui_real_adapter_and_drafts_survive_container_recreation():
             assert client.get('/api/offers', params={'q': '11'}).json() == [{'id': 11, 'name': 'Оффер В'}]
             added = client.post(path, headers=headers, json={'version': 2, 'action': 'add', 'offer_id': 11})
             assert added.status_code == 200
-            assert [b['share'] for b in added.json()['bindings']] == [50, 25, 25]
+            assert [b['share'] for b in added.json()['bindings']] == [34, 33, 33]
             removed = client.post(path, headers=headers, json={'version': 3, 'action': 'remove', 'offer_id': offer_id})
             assert removed.status_code == 200
             draft = removed.json()
-            assert draft['removed'] == [dict(offer_id=offer_id, share=50, state='active', pinned=True)]
+            assert draft['removed'] == [dict(offer_id=offer_id, share=34, state='active', pinned=False)]
             assert [b['share'] for b in draft['bindings']] == [50, 50]
             httpx.post(f'{fixture_url}/control', json={'mode': 'changed'}).raise_for_status()
             run('up', '-d', '--force-recreate', 'app')
@@ -168,7 +168,7 @@ def test_packaged_ui_real_adapter_and_drafts_survive_container_recreation():
             returned = client.post(path, headers=headers, json={'version': 4, 'action': 'bring_back', 'offer_id': offer_id})
             assert returned.status_code == 200
             assert returned.json()['removed'] == []
-            assert [(b['offer_id'], b['share'], b['pinned']) for b in returned.json()['bindings']] == [(10, 25, False), (11, 25, False), (offer_id, 50, True)]
+            assert [(b['offer_id'], b['share'], b['pinned']) for b in returned.json()['bindings']] == [(10, 33, False), (11, 33, False), (offer_id, 34, False)]
             httpx.post(f'{fixture_url}/control', json={'mode': 'failure'}).raise_for_status()
             failure = client.get('/api/campaigns')
             assert failure.status_code == 502

@@ -23,7 +23,7 @@ def test_remove_and_return_pinned_binding_preserves_history_on_reopen(tmp_path):
         returned = act(client, 3, 'bring_back', 1)
         assert returned.status_code == 200
         assert returned.json()['removed'] == []
-        assert [(b['offer_id'], b['share'], b['pinned']) for b in returned.json()['bindings']] == [(2, 30, False), (3, 30, False), (1, 40, True)]
+        assert [(b['offer_id'], b['share'], b['pinned']) for b in returned.json()['bindings']] == [(2, 33, False), (3, 33, False), (1, 34, False)]
 
 
 def test_unavailable_removed_offer_has_reason_and_cannot_return(tmp_path):
@@ -34,7 +34,7 @@ def test_unavailable_removed_offer_has_reason_and_cannot_return(tmp_path):
         remote.offers = lambda: [dict(id=2, name='Beta')]
         stream = client.get('/api/campaigns/12/streams').json()[0]
         assert stream['draft'] == saved
-        assert stream['unavailable_offers'] == {'1': 'Оффер недоступен в каталоге; возврат запрещён'}
+        assert stream['unavailable_offers'] == {'1': 'Offer is unavailable in the catalog; it cannot be brought back'}
         assert act(client, 2, 'bring_back', 1).status_code == 422
         assert draft(client) == saved
 
@@ -45,7 +45,8 @@ def test_unavailable_removed_offer_has_reason_and_cannot_return(tmp_path):
     ((40, 60), None, [('pin', 1, None), ('pin', 2, None)], 'remove', 1, 422, [(1, 40, True), (2, 60, True)]),
     ((100, 27), ['active', 'disabled'], [], 'remove', 1, 422, [(1, 100, False), (2, 27, False)]),
     ((70, 15, 15), None, [('remove', 1, None)], 'bring_back', 1, 200, [(2, 33, False), (3, 33, False), (1, 34, False)]),
-    ((40, 30, 30), None, [('pin', 1, None), ('remove', 1, None), ('share', 2, 80)], 'bring_back', 1, 422, [(2, 80, True), (3, 20, False)]),
+    ((40, 30, 30), None, [('pin', 1, None), ('remove', 1, None), ('share', 2, 80), ('pin', 2, None)], 'bring_back', 1, 200, [(2, 80, True), (3, 10, False), (1, 10, False)]),
+    ((70, 15, 15), None, [('pin', 1, None), ('remove', 2, None)], 'bring_back', 2, 200, [(1, 70, True), (3, 15, False), (2, 15, False)]),
     ((70, 30, 31.5), ['active', 'active', 'disabled'], [], 'remove', 3, 200, [(1, 70, False), (2, 30, False)]),
     ((70, 30, 31.5), ['active', 'active', 'disabled'], [('remove', 3, None)], 'bring_back', 3, 200, [(1, 70, False), (2, 30, False), (3, 31.5, False)]),
     ((100, 27), ['active', 'disabled'], [], 'add', 2, 422, [(1, 100, False), (2, 27, False)]),
@@ -102,3 +103,13 @@ def test_add_existing_offer_redistributes_without_remote_writes(tmp_path):
         assert client.get('/api/offers?q=GAM').json() == [dict(id=3, name='Gamma')]
         assert client.get('/api/offers?q=3').json() == [dict(id=3, name='Gamma')]
         assert client.get('/api/offers?q=33').json() == []
+
+
+def test_offer_search_matches_id_prefix_and_name_substring(tmp_path):
+    class PrefixCatalogue(Catalogue):
+        def offers(self):
+            return [dict(id=112, name='Alpha'), dict(id=113, name='Beta'), dict(id=211, name='Alphabet')]
+
+    with TestClient(create_app(PrefixCatalogue((70, 30)), database_url=f"sqlite:///{tmp_path / 'draft.db'}")) as client:
+        assert [offer['id'] for offer in client.get('/api/offers?q=11').json()] == [112, 113]
+        assert [offer['id'] for offer in client.get('/api/offers?q=PHA').json()] == [112, 211]

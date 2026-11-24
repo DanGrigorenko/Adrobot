@@ -12,23 +12,23 @@ class Publisher:
     def stream(self, campaign_id, stream_id):
         remote = next((s for s in self.keitaro.streams(campaign_id) if s['id'] == stream_id), None)
         if not stream_is_editable(remote):
-            raise RuntimeError('Поток удалён или больше не поддерживает редактирование офферов')
+            raise RuntimeError('The stream was deleted or no longer supports offer editing')
         return [{k: b[k] for k in ('offer_id', 'share', 'state')} for b in remote.get('offers', [])]
 
     def run(self, campaign_id, stream_id, version, *, check=False):
         lock = self.locks.setdefault(stream_id, Lock())
         if not lock.acquire(blocking=False):
-            raise RuntimeError('Публикация ещё выполняется; результат пока неизвестен')
+            raise RuntimeError('Publication is still in progress; the outcome is not yet known')
         try:
             if check:
                 draft = self.store.existing(campaign_id).get(stream_id)
                 if draft is None:
-                    raise LookupError('Черновик не найден')
+                    raise LookupError('Draft not found')
                 if draft['version'] != version:
-                    raise RuntimeError('Черновик изменён в другой вкладке. Перечитайте потоки.')
+                    raise RuntimeError('The draft changed in another tab. Reload the streams.')
                 operation = self.store.publication(campaign_id, stream_id)
                 if operation is None:
-                    raise LookupError('Публикация не найдена')
+                    raise LookupError('Publication not found')
                 if not operation['locked']:
                     return self.result(campaign_id, stream_id, operation)
             else:

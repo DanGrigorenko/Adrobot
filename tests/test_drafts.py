@@ -32,21 +32,29 @@ def test_initial_draft_survives_database_reopen_and_remote_changes(tmp_path):
                                 "offers": [{"offer_id": 9, "share": 100, "state": "active"}]}]
     with TestClient(create_app(remote, database_url=url)) as client:
         reopened = client.get('/api/campaigns/12/streams').json()[0]
-        assert reopened['draft'] == draft
-        assert reopened['conflict'] is True
+        assert reopened['draft']['removed'] == [draft['bindings'][1]]
+        assert reopened['draft']['bindings'] == [dict(offer_id=9, share=100, state='active', pinned=False)]
+        assert reopened['conflict'] is False
         assert reopened['offers'][0]['share'] == 100
+        assert client.get('/api/campaigns/12/streams').json()[0]['draft'] == reopened['draft']
+        remote.streams = lambda _: [{'id': 7, 'type': 'regular', 'schema': 'landings', 'offers': [
+            {'offer_id': 9, 'share': 70, 'state': 'active'},
+            {'offer_id': 10, 'share': 30, 'state': 'active'}]}]
+        restored = client.get('/api/campaigns/12/streams').json()[0]['draft']
+        assert restored['removed'] == []
+        assert [b['offer_id'] for b in restored['bindings']] == [9, 10]
 
 
 @pytest.mark.parametrize(('bindings', 'reason'), [
     ([{'offer_id': 9, 'share': 70, 'state': 'active'}, {'offer_id': 10, 'share': 30, 'state': 'active'}], None),
     ([{'offer_id': 9, 'share': 100, 'state': 'active'}, {'offer_id': 10, 'share': 0, 'state': 'active'}], None),
     ([{'offer_id': 9, 'share': 100, 'state': 'active'}, {'offer_id': 10, 'share': 31.5, 'state': 'disabled'}], None),
-    ([{'offer_id': 9, 'share': 20, 'state': 'active'}, {'offer_id': 10, 'share': 20, 'state': 'active'}], 'Сумма активных долей должна быть 100%'),
-    ([{'offer_id': 9, 'share': 99.5, 'state': 'active'}], 'Активные доли должны быть целыми числами от 0 до 100'),
-    ([{'offer_id': 9, 'share': -1, 'state': 'active'}], 'Активные доли должны быть целыми числами от 0 до 100'),
-    ([{'offer_id': 9, 'share': 101, 'state': 'active'}], 'Активные доли должны быть целыми числами от 0 до 100'),
-    ([{'offer_id': 9, 'share': 100, 'state': 'disabled'}], 'Нужна хотя бы одна активная привязка'),
-    ([], 'Нужна хотя бы одна активная привязка'),
+    ([{'offer_id': 9, 'share': 20, 'state': 'active'}, {'offer_id': 10, 'share': 20, 'state': 'active'}], 'Active shares must total 100%'),
+    ([{'offer_id': 9, 'share': 99.5, 'state': 'active'}], 'Active shares must be integers from 0 to 100'),
+    ([{'offer_id': 9, 'share': -1, 'state': 'active'}], 'Active shares must be integers from 0 to 100'),
+    ([{'offer_id': 9, 'share': 101, 'state': 'active'}], 'Active shares must be integers from 0 to 100'),
+    ([{'offer_id': 9, 'share': 100, 'state': 'disabled'}], 'At least one active binding is required'),
+    ([], 'At least one active binding is required'),
 ])
 def test_initial_shares_are_preserved_and_explain_future_push_block(tmp_path, bindings, reason):
     remote = Keitaro()
@@ -115,7 +123,7 @@ def test_stream_or_catalogue_failure_does_not_replace_the_saved_base(tmp_path):
         deleted = client.get('/api/campaigns/12/streams').json()[0]
         assert deleted['draft'] == draft
         assert deleted['editable'] is False
-        assert 'удалён' in deleted['read_only_reason']
+        assert 'deleted' in deleted['read_only_reason']
 
 
 def test_concurrent_first_opens_establish_one_shared_initial_draft(tmp_path):

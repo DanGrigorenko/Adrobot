@@ -44,10 +44,10 @@ def test_preview_shows_validated_name_settings_and_two_routes_without_remote_wri
                      'traffic_source': {'id': 4, 'name': 'Test source'},
                      'name_prefix': 'test_example_'},
         'campaign': {'state': 'disabled', 'type': 'position'},
-        'regular': {'type': 'regular', 'schema': 'redirect', 'action_type': 'http',
+        'regular': {'name': 'GEO → Google', 'type': 'regular', 'schema': 'redirect', 'action_type': 'http',
                     'action_payload': 'https://google.com',
                     'filters': [{'name': 'country', 'mode': 'accept', 'payload': ['DE']}]},
-        'default': {'type': 'default', 'schema': 'landings', 'action_type': 'do_nothing',
+        'default': {'name': 'Default distribution', 'type': 'default', 'schema': 'landings', 'action_type': 'do_nothing',
                     'offers': [{'offer_id': 9, 'name': 'Summer offer', 'share': 100, 'state': 'active'}]},
     }
     assert creator.post('/api/campaigns', headers=HEADERS, json={}).status_code == 405
@@ -68,10 +68,10 @@ def test_geo_validation_and_deduplication(creator, geos, expected):
         assert response.json()['detail']
 
 
-def test_offer_search_by_name_or_exact_id(creator):
+def test_offer_search_by_name_or_id_prefix(creator):
     expected = [{'id': 9, 'name': 'Summer offer'}]
     assert creator.get('/api/offers', params={'q': 'SUMMER'}).json() == expected
-    assert creator.get('/api/offers', params={'q': ' 9 '}).json() == expected
+    assert creator.get('/api/offers', params={'q': ' 9 '}).json() == expected + [{'id': 90, 'name': 'Winter offer'}]
     assert creator.get('/api/offers', params={'q': 'missing'}).json() == []
     assert len(creator.get('/api/offers').json()) == 2
 
@@ -107,7 +107,7 @@ def test_unavailable_selected_offer_blocks_preview(creator):
     response = creator.post('/api/creator/preview', headers=HEADERS,
                             json={'name': 'campaign1', 'geos': ['DE'], 'offer_id': 999})
     assert response.status_code == 422
-    assert 'оффер недоступен' in response.json()['detail']
+    assert 'offer is unavailable' in response.json()['detail']
 
 
 @pytest.mark.parametrize('method', ['domains', 'groups', 'traffic_sources', 'offers'])
@@ -127,11 +127,16 @@ def test_upstream_read_failure_blocks_preview_without_leaking_details(creator, m
     {'name': 'campaign1', 'geos': [], 'offer_id': 9},
     {'name': 'campaign1', 'geos': ['DE'], 'offer_id': True},
 ])
-def test_invalid_input_has_readable_russian_error(creator, data):
+def test_invalid_input_has_readable_english_error(creator, data):
     response = creator.post('/api/creator/preview', headers=HEADERS, json=data)
     assert response.status_code == 422
     assert isinstance(response.json()['detail'], str)
-    assert any('а' <= char <= 'я' for char in response.json()['detail'])
+    assert response.json()['detail'] in {
+        'Campaign name must not be empty',
+        'The final name including the prefix must not exceed 255 characters',
+        'GEO: select at least one country using two-letter ISO 3166-1 codes',
+        'Offer: select an existing offer with a positive integer ID',
+    }
 
 
 def test_final_name_is_available_before_form_submission(creator):

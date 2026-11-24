@@ -7,25 +7,29 @@ def edit_binding(bindings, offer_id, action, share=None):
     result = deepcopy(bindings)
     matches = [b for b in result if b['offer_id'] == offer_id]
     if len(matches) != 1 or matches[0]['state'] != 'active':
-        raise ValueError('Изменять можно только существующую активную привязку')
+        raise ValueError('Only an existing active binding can be changed')
     target = matches[0]
     if action == 'share':
         if type(share) is not int or not 0 <= share <= 100:
-            raise ValueError('Доля должна быть целым числом от 0 до 100')
+            raise ValueError('Share must be an integer from 0 to 100')
+        was_pinned = target['pinned']
         target.update(share=share, pinned=True)
+        redistribute(result)
+        target['pinned'] = was_pinned
+        return result
     elif action == 'pin':
         if type(target['share']) is not int or not 0 <= target['share'] <= 100:
-            raise ValueError('Нельзя закрепить некорректную долю: сначала исправьте её')
+            raise ValueError('An invalid share cannot be pinned; correct it first')
         target['pinned'] = True
         if sum(b['share'] for b in result if b['state'] == 'active' and b['pinned']) > 100:
-            raise ValueError('Сумма закреплённых долей превышает 100%')
+            raise ValueError('Pinned shares exceed 100%')
         if all(b['pinned'] for b in result if b['state'] == 'active') and validation_errors(result):
-            raise ValueError('Сумма закреплённых долей должна быть 100%')
+            raise ValueError('Pinned shares must total 100%')
         return result
     elif action == 'unpin':
         target['pinned'] = False
     else:
-        raise ValueError('Неизвестное действие')
+        raise ValueError('Unknown action')
     return redistribute(result)
 
 
@@ -33,11 +37,11 @@ def redistribute(result):
     active = [b for b in result if b['state'] == 'active']
     pinned = [b for b in active if b['pinned']]
     if any(type(b['share']) is not int or not 0 <= b['share'] <= 100 for b in pinned):
-        raise ValueError('Закреплённые доли должны быть целыми числами от 0 до 100')
+        raise ValueError('Pinned shares must be integers from 0 to 100')
     remaining = 100 - sum(b['share'] for b in pinned)
     free = sorted((b for b in active if not b['pinned']), key=lambda b: b['offer_id'])
     if remaining < 0 or (not free and remaining != 0):
-        raise ValueError('Невозможно распределить 100% без изменения закреплённых долей')
+        raise ValueError('Cannot distribute 100% without changing pinned shares')
     if free:
         whole, extra = divmod(remaining, len(free))
         for index, binding in enumerate(free):
@@ -57,16 +61,16 @@ def same_bindings(left, right):
 
 def validation_errors(bindings):
     if any(b['state'] not in ('active', 'disabled') for b in bindings):
-        return ['Неизвестный статус привязки']
+        return ['Unknown binding status']
     if len({b['offer_id'] for b in bindings}) != len(bindings):
-        return ['ID оффера не должен повторяться в потоке']
+        return ['Offer IDs must be unique within a stream']
     active = [b for b in bindings if b['state'] == 'active']
     if not active:
-        return ['Нужна хотя бы одна активная привязка']
+        return ['At least one active binding is required']
     if any(type(b['share']) is not int or not 0 <= b['share'] <= 100 for b in active):
-        return ['Активные доли должны быть целыми числами от 0 до 100']
+        return ['Active shares must be integers from 0 to 100']
     if sum(b['share'] for b in active) != 100:
-        return ['Сумма активных долей должна быть 100%']
+        return ['Active shares must total 100%']
     return []
 
 
@@ -88,15 +92,15 @@ def open_streams(keitaro, store, campaign_id):
         result.append({
             'id': stream['id'], 'name': stream.get('name', ''),
             'type': stream.get('type', ''), 'schema': stream.get('schema', ''),
-            'offers': [dict(b, name=catalogue.get(b['offer_id'], 'Оффер недоступен в каталоге')) for b in offers],
-            'offer_names': {str(b['offer_id']): catalogue.get(b['offer_id'], 'Оффер недоступен в каталоге')
+            'offers': [dict(b, name=catalogue.get(b['offer_id'], 'Offer is unavailable in the catalog')) for b in offers],
+            'offer_names': {str(b['offer_id']): catalogue.get(b['offer_id'], 'Offer is unavailable in the catalog')
                             for b in (draft['bindings'] + draft['removed'] if draft else offers)},
-            'unavailable_offers': {str(b['offer_id']): 'Оффер недоступен в каталоге; возврат запрещён'
+            'unavailable_offers': {str(b['offer_id']): 'Offer is unavailable in the catalog; it cannot be brought back'
                                    for b in (draft['removed'] if draft else []) if b['offer_id'] not in catalogue},
             'editable': editable, 'draft': draft,
             'publication': store.publication(campaign_id, stream['id']) if draft else None,
-            'read_only_reason': (None if editable else 'Поток удалён из Keitaro. Черновик сохранён; публикация запрещена'
-                                 if stream.get('deleted') else 'Этот тип или схема потока доступны только для просмотра; публикация запрещена'),
+            'read_only_reason': (None if editable else 'The stream was deleted from Keitaro. The draft has been saved; publishing is blocked'
+                                 if stream.get('deleted') else 'This stream type or schema is read-only; publishing is blocked'),
             'conflict': draft is not None and not same_bindings(draft['base'], offers),
             'validation_errors': validation_errors(draft['bindings']) if draft else [],
         })

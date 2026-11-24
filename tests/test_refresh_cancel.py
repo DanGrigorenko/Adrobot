@@ -165,8 +165,8 @@ def test_fetch_preserves_conflicting_pins_and_cancel_reports_external_pin_loss(t
         accepted = response.json()
         assert accepted['base'] == remote.bindings
         assert accepted['bindings'] == [dict(b, pinned=False) for b in remote.bindings]
-        assert accepted['removed'] == []  # External removals never become Removed history.
-        assert any('1' in notice and 'Pin' in notice for notice in accepted['notices'])
+        assert accepted['removed'] == ([dict(base[0], pinned=False)] if change == 'removed' else [])
+        assert any('Offer 1 was unpinned' in notice for notice in accepted['notices'])
         assert current(client)['conflict'] is False
     with TestClient(create_app(remote, database_url=url)) as client:
         assert current(client)['draft'] == accepted
@@ -188,7 +188,7 @@ def test_fetch_and_cancel_distinguish_invalid_boolean_share_from_integer(tmp_pat
         assert accepted.status_code == 200
         assert accepted.json()['bindings'][0]['share'] is True
         assert accepted.json()['bindings'][0]['pinned'] is False
-        assert any('Pin' in notice and '1' in notice for notice in accepted.json()['notices'])
+        assert any('Offer 1 was unpinned' in notice for notice in accepted.json()['notices'])
         assert current(client)['validation_errors']
         assert current(client)['conflict'] is False
 
